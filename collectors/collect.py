@@ -19,6 +19,8 @@ from datetime import datetime, timezone, timedelta
 
 from telethon import TelegramClient, errors
 from telethon.errors import SessionPasswordNeededError
+from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.tl.types import InputPeerChannel
 
 # --- paths ---
 BASE_DIR = Path.home() / ".hermes" / "digest"
@@ -41,7 +43,7 @@ def load_config():
         )
         print(
             json.dumps(
-                {"api_id": 12345, "api_hash": "xxx", "phone": "+79001234567"},
+                {"api_id": 12345, "api_hash": "xxx", "phone": "+790****4567"},
                 indent=2,
             ),
             file=sys.stderr,
@@ -58,9 +60,14 @@ def load_channels():
         return json.load(f)
 
 
-# ──────────────────────────────────────────────────
+def save_channels(channels):
+    with open(CHANNELS_FILE, "w") as f:
+        json.dump(channels, f, ensure_ascii=False, indent=2)
+
+
+# ─────────────────────────────────────────────
 # main
-# ──────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 
 
 async def main():
@@ -83,9 +90,9 @@ async def main():
         sys.exit(1)
 
 
-# ──────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # client helpers
-# ──────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 
 
 async def get_client():
@@ -99,9 +106,9 @@ async def get_client():
     return client, config
 
 
-# ──────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # auth mode
-# ──────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 
 
 async def auth_mode():
@@ -119,7 +126,7 @@ async def auth_mode():
 
     phone = config.get("phone")
     if not phone:
-        phone = input("Phone (+79001234567): ")
+        phone = input("Phone (+790****4567): ")
 
     await client.send_code_request(phone)
     code = input("Code (with spaces if needed): ")
@@ -135,9 +142,9 @@ async def auth_mode():
     print(f"   Session saved to {SESSION_DIR / 'user.session'}")
 
 
-# ──────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # resolve chat ID
-# ──────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 
 
 async def resolve_chat_id(link: str):
@@ -154,14 +161,20 @@ async def resolve_chat_id(link: str):
             [{"id": entity.id, "title": entity.title}],
             ensure_ascii=False, indent=2
         ))
+    except errors.rpcerrorlist.InviteHashExpiredError:
+        print("❌ Invite link expired or invalid.", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"❌ Cannot resolve: {e}", file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
         print(f"❌ Error: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-# ──────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # collect posts
-# ──────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 
 
 async def collect_posts():
@@ -207,7 +220,11 @@ async def collect_posts():
                 if getattr(entity, "username", None):
                     link = f"https://t.me/{entity.username}/{msg.id}"
                 else:
-                    link = f"https://t.me/c/{entity.id}/{msg.id}"
+                    # private channel: use https://t.me/c/STRIPPED_ID/msg_id
+                    cid = entity.id
+                    if cid < 0:
+                        cid = abs(cid) % 10**12
+                    link = f"https://t.me/c/{cid}/{msg.id}"
 
                 posts.append({
                     "id": msg.id,
@@ -248,6 +265,7 @@ async def collect_posts():
             pass
 
     # stdout is empty → no_agent stays silent
+    # stderr goes to Hermes logs
 
 
 if __name__ == "__main__":
