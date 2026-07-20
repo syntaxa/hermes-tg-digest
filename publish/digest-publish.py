@@ -24,6 +24,11 @@ async def main():
 
     await client.send_message(entity, text, parse_mode="html", link_preview=False)
     print(f"Published to {entity.title}")
+
+    # cleanup: remove used files so stale data never re-publishes
     OUTPUT_FILE.unlink(missing_ok=True)
+    for f in (BASE / "data").glob("*.json"):
+        f.unlink()
+        print(f"  Cleaned: data/{f.name}")
 
 asyncio.run(main())
