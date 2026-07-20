@@ -226,15 +226,6 @@ async def collect_posts():
                         cid = abs(cid) % 10**12
                     link = f"https://t.me/c/{cid}/{msg.id}"
 
-                # detect digest-like posts (repoasts of someone else's digest)
-                t_lower = text.lower()
-                is_digest = any(kw in t_lower for kw in [
-                    "дайджест", "digest", "еженедельн",
-                    "итоги недели", "итоги месяца",
-                    "ежедневный дайджест", "подборка",
-                    "дайджест ", " digest", "дайджест:",
-                ])
-
                 posts.append({
                     "id": msg.id,
                     "date": msg.date.isoformat(),
@@ -243,7 +234,6 @@ async def collect_posts():
                     "text": text[:4096],  # cap per-post
                     "link": link,
                     "has_media": bool(msg.media),
-                    "is_digest": is_digest,
                 })
 
             all_posts.extend(posts)
