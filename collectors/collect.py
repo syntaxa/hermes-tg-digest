@@ -195,55 +195,90 @@ async def collect_posts():
         print("Not authorized. Run --auth first.", file=sys.stderr)
         sys.exit(1)
 
+    CHANNEL_TIMEOUT = 30  # seconds per channel — one slow channel won't block all 18
     since = datetime.now(timezone.utc) - timedelta(hours=24)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     all_posts = []
 
+    # structured report for transparency in the channel
+    report = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "date": today,
+        "channels": [],
+        "total_ok": 0,
+        "total_errors": 0,
+    }
+
+    async def collect_one(ch_id: object, ch_title: str):
+        """Fetch posts from a single channel (wrapped for timeout)."""
+        entity = await client.get_entity(ch_id)
+        posts = []
+        async for msg in client.iter_messages(
+            entity, offset_date=since, reverse=True
+        ):
+            text = msg.text or ""
+            if not text.strip():
+                continue
+            if getattr(entity, "username", None):
+                link = f"https://t.me/{entity.username}/{msg.id}"
+            else:
+                cid = entity.id
+                if cid < 0:
+                    cid = abs(cid) % 10**12
+                link = f"https://t.me/c/{cid}/{msg.id}"
+            posts.append({
+                "id": msg.id,
+                "date": msg.date.isoformat(),
+                "channel_id": entity.id,
+                "channel_title": entity.title or ch_title,
+                "text": text[:4096],
+                "link": link,
+                "has_media": bool(msg.media),
+            })
+        return posts, entity
+
     for ch in channels:
         channel_id = ch.get("id") if isinstance(ch, dict) else ch
         channel_title = ch.get("title", "") if isinstance(ch, dict) else ""
+        result = {"id": str(channel_id), "title": channel_title}
 
         try:
-            entity = await client.get_entity(channel_id)
-            posts = []
-            async for msg in client.iter_messages(
-                entity, offset_date=since, reverse=True
-            ):
-                text = msg.text or ""
-
-                # skip posts with no text content
-                if not text.strip():
-                    continue
-
-                # build permalink
-                if getattr(entity, "username", None):
-                    link = f"https://t.me/{entity.username}/{msg.id}"
-                else:
-                    # private channel: use https://t.me/c/STRIPPED_ID/msg_id
-                    cid = entity.id
-                    if cid < 0:
-                        cid = abs(cid) % 10**12
-                    link = f"https://t.me/c/{cid}/{msg.id}"
-
-                posts.append({
-                    "id": msg.id,
-                    "date": msg.date.isoformat(),
-                    "channel_id": entity.id,
-                    "channel_title": entity.title or channel_title,
-                    "text": text[:4096],  # cap per-post
-                    "link": link,
-                    "has_media": bool(msg.media),
-                })
-
+            posts, entity = await asyncio.wait_for(
+                collect_one(channel_id, channel_title),
+                timeout=CHANNEL_TIMEOUT,
+            )
             all_posts.extend(posts)
-            # stderr for progress — invisible in no_agent delivery
+            result["status"] = "ok"
+            result["posts"] = len(posts)
+            report["total_ok"] += 1
             print(f"  ✓ {entity.title}: {len(posts)} posts", file=sys.stderr)
 
+        except asyncio.TimeoutError:
+            result["status"] = "error"
+            result["error"] = "TIMEOUT"
+            result["detail"] = f"Превышен таймаут {CHANNEL_TIMEOUT}s"
+            report["total_errors"] += 1
+            print(f"  ✗ {channel_id}: Timeout ({CHANNEL_TIMEOUT}s)", file=sys.stderr)
         except errors.FloodWaitError as e:
+            result["status"] = "error"
+            result["error"] = "FLOOD_WAIT"
+            result["detail"] = f"Flood wait {e.seconds}s"
+            report["total_errors"] += 1
             print(f"  ⏳ Flood wait {e.seconds}s — skipping {channel_id}", file=sys.stderr)
         except Exception as e:
+            result["status"] = "error"
+            result["error"] = type(e).__name__
+            result["detail"] = str(e)
+            report["total_errors"] += 1
             print(f"  ✗ {channel_id}: {type(e).__name__}: {e}", file=sys.stderr)
+
+        report["channels"].append(result)
+
+    # save structured report for publish-step transparency
+    report_file = DATA_DIR / "collect-report.json"
+    with open(report_file, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
 
     # save
     data_file = DATA_DIR / f"{today}.json"
