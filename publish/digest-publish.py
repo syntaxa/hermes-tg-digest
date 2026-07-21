@@ -1,12 +1,38 @@
 #!/usr/bin/env python3
-"""Publish digest to Syntax channels digest via Telethon."""
-import asyncio, sys, re
+"""Publish digest to Telegram channel via Telethon."""
+import asyncio, sys, re, os, json
 from pathlib import Path
 from telethon import TelegramClient
-import json
 
-BASE = Path.home() / ".hermes" / "digest"
-cfg = json.loads((BASE / "config.json").read_text())
+# --- Configuration -----------------------------------------------------------
+# Priority: env var > config.json > default
+CONFIG_FILE = Path(os.getenv("DIGEST_CONFIG", "config.json"))
+
+def load_config() -> dict:
+    cfg = {}
+    if CONFIG_FILE.exists():
+        cfg = json.loads(CONFIG_FILE.read_text())
+    # env vars override file
+    env_map = {
+        "DIGEST_API_ID": ("api_id", int),
+        "DIGEST_API_HASH": ("api_hash", str),
+        "DIGEST_PHONE": ("phone", str),
+        "DIGEST_CHANNEL_LINK": ("channel_link", str),
+        "DIGEST_DIR": ("digest_dir", str),
+        "DIGEST_BRAND": ("brand", str),
+    }
+    for env_key, (cfg_key, caster) in env_map.items():
+        val = os.getenv(env_key)
+        if val is not None:
+            cfg[cfg_key] = caster(val) if caster is not str else val
+    return cfg
+
+cfg = load_config()
+
+BASE = Path(os.path.expanduser(cfg.get("digest_dir", "~/.hermes/digest")))
+CHANNEL_LINK = cfg.get("channel_link", "")
+BRAND = cfg.get("brand", "")
+
 OUTPUT_FILE = BASE / "output.md"
 REPORT_FILE = BASE / "data" / "collect-report.json"
 
@@ -14,18 +40,16 @@ MAX_MSG = 4000  # Telegram hard limit ~4096 chars; stay under
 
 
 def split_digest(text: str) -> list[str]:
-    """Split digest at channel headers (\n📡 <b>) to stay under MAX_MSG."""
+    """Split digest at channel headers (\\n📡 <b>) to stay under MAX_MSG."""
     if len(text) <= MAX_MSG:
         return [text]
 
-    # split on channel headers, keep the delimiter
     parts = re.split(r"(\n📡 <b>)", text)
-    # recombine: each odd element is a header, even is content between
     chunks = []
-    buf = parts[0] if parts[0] else ""  # preamble (title + date line)
+    buf = parts[0] if parts[0] else ""
     i = 1
     while i < len(parts):
-        header = parts[i]  # "\n📡 <b>..."
+        header = parts[i]
         body = parts[i + 1] if i + 1 < len(parts) else ""
         candidate = header + body
         if len(buf) + len(candidate) <= MAX_MSG:
@@ -38,10 +62,9 @@ def split_digest(text: str) -> list[str]:
     if buf:
         chunks.append(buf)
 
-    # Append "ч. N/N" suffix to each chunk
     total = len(chunks)
     if total > 1:
-        suffix = "\n\n— ⋅ — ⋅ —\n<i>ч. {}/{} · @syntaxachannel</i>"
+        suffix = "\n\n— ⋅ — ⋅ —\n<i>ч. {}/{}" + (f" · {BRAND}" if BRAND else "") + "</i>"
         for idx in range(total):
             chunks[idx] += suffix.format(idx + 1, total)
 
@@ -73,7 +96,7 @@ async def send_transparency(client, entity) -> bool:
     report = None
     if REPORT_FILE.exists():
         report = json.loads(REPORT_FILE.read_text())
-        REPORT_FILE.unlink(missing_ok=True)  # consume once
+        REPORT_FILE.unlink(missing_ok=True)
 
     if not report:
         return False
@@ -113,7 +136,6 @@ async def cleanup():
     """Remove processed data files."""
     OUTPUT_FILE.unlink(missing_ok=True)
     for f in (BASE / "data").glob("*.json"):
-        # collect-report is already consumed and removed in send_transparency
         if f.name == "collect-report.json":
             continue
         f.unlink()
@@ -121,11 +143,18 @@ async def cleanup():
 
 
 async def main():
+    if not all([cfg.get("api_id"), cfg.get("api_hash")]):
+        print("ERROR: api_id and api_hash required. Set DIGEST_API_ID/DIGEST_API_HASH env vars or create config.json.", file=sys.stderr)
+        sys.exit(1)
+    if not CHANNEL_LINK:
+        print("ERROR: DIGEST_CHANNEL_LINK is required.", file=sys.stderr)
+        sys.exit(1)
+
     client = TelegramClient(
         str(BASE / "session" / "user"), cfg["api_id"], cfg["api_hash"]
     )
     await client.start()
-    entity = await client.get_entity("https://t.me/+your_invite_hash")
+    entity = await client.get_entity(CHANNEL_LINK)
 
     # 1. Send the digest (if available)
     digest_sent = await send_digest(client, entity)

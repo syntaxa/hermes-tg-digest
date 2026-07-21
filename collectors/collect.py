@@ -9,7 +9,6 @@ Usage:
   python collect.py --auth             # interactive authentication
   python collect.py --get-chat-id <link>  # resolve invite/username to numeric ID
 """
-
 import asyncio
 import json
 import os
@@ -22,9 +21,28 @@ from telethon.errors import SessionPasswordNeededError
 from telethon.tl.functions.messages import ImportChatInviteRequest
 from telethon.tl.types import InputPeerChannel
 
-# --- paths ---
-BASE_DIR = Path.home() / ".hermes" / "digest"
-CONFIG_FILE = BASE_DIR / "config.json"
+# --- Configuration -----------------------------------------------------------
+CONFIG_FILE = Path(os.getenv("DIGEST_CONFIG", "config.json"))
+
+def load_config() -> dict:
+    cfg = {}
+    if CONFIG_FILE.exists():
+        cfg = json.loads(CONFIG_FILE.read_text())
+    env_map = {
+        "DIGEST_API_ID": ("api_id", int),
+        "DIGEST_API_HASH": ("api_hash", str),
+        "DIGEST_PHONE": ("phone", str),
+        "DIGEST_DIR": ("digest_dir", str),
+    }
+    for env_key, (cfg_key, caster) in env_map.items():
+        val = os.getenv(env_key)
+        if val is not None:
+            cfg[cfg_key] = caster(val) if caster is not str else val
+    return cfg
+
+cfg = load_config()
+BASE_DIR = Path(os.path.expanduser(cfg.get("digest_dir", "~/.hermes/digest")))
+CONFIG_FILE_PATH = BASE_DIR / "config.json"
 CHANNELS_FILE = BASE_DIR / "channels.json"
 SESSION_DIR = BASE_DIR / "session"
 DATA_DIR = BASE_DIR / "data"
@@ -33,24 +51,6 @@ DATA_DIR = BASE_DIR / "data"
 def ensure_dirs():
     for d in [BASE_DIR, SESSION_DIR, DATA_DIR]:
         d.mkdir(parents=True, exist_ok=True)
-
-
-def load_config():
-    if not CONFIG_FILE.exists():
-        print(
-            "Config not found. Create ~/.hermes/digest/config.json:",
-            file=sys.stderr,
-        )
-        print(
-            json.dumps(
-                {"api_id": 12345, "api_hash": "xxx", "phone": "+790****4567"},
-                indent=2,
-            ),
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
 
 
 def load_channels():
@@ -96,7 +96,7 @@ async def main():
 
 
 async def get_client():
-    config = load_config()
+    config = _get_api_creds()
     client = TelegramClient(
         str(SESSION_DIR / "user"),
         config["api_id"],
@@ -106,6 +106,15 @@ async def get_client():
     return client, config
 
 
+def _get_api_creds():
+    api_id = cfg.get("api_id")
+    api_hash = cfg.get("api_hash")
+    if not api_id or not api_hash:
+        print("ERROR: api_id and api_hash required. Set DIGEST_API_ID/DIGEST_API_HASH or create config.json.", file=sys.stderr)
+        sys.exit(1)
+    return {"api_id": api_id, "api_hash": api_hash}
+
+
 # ─────────────────────────────────────────────
 # auth mode
 # ─────────────────────────────────────────────
@@ -113,9 +122,9 @@ async def get_client():
 
 async def auth_mode():
     """Interactive authentication. Run once to create session file."""
-    config = load_config()
+    creds = _get_api_creds()
     client = TelegramClient(
-        str(SESSION_DIR / "user"), config["api_id"], config["api_hash"]
+        str(SESSION_DIR / "user"), creds["api_id"], creds["api_hash"]
     )
 
     await client.connect()
@@ -124,9 +133,9 @@ async def auth_mode():
         print(f"✅ Already authorized as {me.first_name} (@{me.username})")
         return
 
-    phone = config.get("phone")
+    phone = cfg.get("phone")
     if not phone:
-        phone = input("Phone (+790****4567): ")
+        phone = input("Phone (+79001234567): ")
 
     await client.send_code_request(phone)
     code = input("Code (with spaces if needed): ")
@@ -180,105 +189,65 @@ async def resolve_chat_id(link: str):
 async def collect_posts():
     """Main collection: fetch last 24h posts from all subscribed channels.
     Silent on success (empty stdout) — designed for no_agent cron."""
-    config = load_config()
+    creds = _get_api_creds()
     channels = load_channels()
 
     if not channels:
-        # not an error, just nothing to do — stay silent
         sys.exit(0)
 
     client = TelegramClient(
-        str(SESSION_DIR / "user"), config["api_id"], config["api_hash"]
+        str(SESSION_DIR / "user"), creds["api_id"], creds["api_hash"]
     )
     await client.start()
     if not await client.is_user_authorized():
         print("Not authorized. Run --auth first.", file=sys.stderr)
         sys.exit(1)
 
-    CHANNEL_TIMEOUT = 30  # seconds per channel — one slow channel won't block all 18
     since = datetime.now(timezone.utc) - timedelta(hours=24)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     all_posts = []
 
-    # structured report for transparency in the channel
-    report = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "date": today,
-        "channels": [],
-        "total_ok": 0,
-        "total_errors": 0,
-    }
-
-    async def collect_one(ch_id: object, ch_title: str):
-        """Fetch posts from a single channel (wrapped for timeout)."""
-        entity = await client.get_entity(ch_id)
-        posts = []
-        async for msg in client.iter_messages(
-            entity, offset_date=since, reverse=True
-        ):
-            text = msg.text or ""
-            if not text.strip():
-                continue
-            if getattr(entity, "username", None):
-                link = f"https://t.me/{entity.username}/{msg.id}"
-            else:
-                cid = entity.id
-                if cid < 0:
-                    cid = abs(cid) % 10**12
-                link = f"https://t.me/c/{cid}/{msg.id}"
-            posts.append({
-                "id": msg.id,
-                "date": msg.date.isoformat(),
-                "channel_id": entity.id,
-                "channel_title": entity.title or ch_title,
-                "text": text[:4096],
-                "link": link,
-                "has_media": bool(msg.media),
-            })
-        return posts, entity
-
     for ch in channels:
         channel_id = ch.get("id") if isinstance(ch, dict) else ch
         channel_title = ch.get("title", "") if isinstance(ch, dict) else ""
-        result = {"id": str(channel_id), "title": channel_title}
 
         try:
-            posts, entity = await asyncio.wait_for(
-                collect_one(channel_id, channel_title),
-                timeout=CHANNEL_TIMEOUT,
-            )
+            entity = await client.get_entity(channel_id)
+            posts = []
+            async for msg in client.iter_messages(
+                entity, offset_date=since, reverse=True
+            ):
+                text = msg.text or ""
+
+                if not text.strip():
+                    continue
+
+                if getattr(entity, "username", None):
+                    link = f"https://t.me/{entity.username}/{msg.id}"
+                else:
+                    cid = entity.id
+                    if cid < 0:
+                        cid = abs(cid) % 10**12
+                    link = f"https://t.me/c/{cid}/{msg.id}"
+
+                posts.append({
+                    "id": msg.id,
+                    "date": msg.date.isoformat(),
+                    "channel_id": entity.id,
+                    "channel_title": entity.title or channel_title,
+                    "text": text[:4096],
+                    "link": link,
+                    "has_media": bool(msg.media),
+                })
+
             all_posts.extend(posts)
-            result["status"] = "ok"
-            result["posts"] = len(posts)
-            report["total_ok"] += 1
             print(f"  ✓ {entity.title}: {len(posts)} posts", file=sys.stderr)
 
-        except asyncio.TimeoutError:
-            result["status"] = "error"
-            result["error"] = "TIMEOUT"
-            result["detail"] = f"Превышен таймаут {CHANNEL_TIMEOUT}s"
-            report["total_errors"] += 1
-            print(f"  ✗ {channel_id}: Timeout ({CHANNEL_TIMEOUT}s)", file=sys.stderr)
         except errors.FloodWaitError as e:
-            result["status"] = "error"
-            result["error"] = "FLOOD_WAIT"
-            result["detail"] = f"Flood wait {e.seconds}s"
-            report["total_errors"] += 1
             print(f"  ⏳ Flood wait {e.seconds}s — skipping {channel_id}", file=sys.stderr)
         except Exception as e:
-            result["status"] = "error"
-            result["error"] = type(e).__name__
-            result["detail"] = str(e)
-            report["total_errors"] += 1
             print(f"  ✗ {channel_id}: {type(e).__name__}: {e}", file=sys.stderr)
-
-        report["channels"].append(result)
-
-    # save structured report for publish-step transparency
-    report_file = DATA_DIR / "collect-report.json"
-    with open(report_file, "w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
 
     # save
     data_file = DATA_DIR / f"{today}.json"
@@ -298,9 +267,6 @@ async def collect_posts():
                 print(f"  🗑️ Cleaned: {f.name}", file=sys.stderr)
         except ValueError:
             pass
-
-    # stdout is empty → no_agent stays silent
-    # stderr goes to Hermes logs
 
 
 if __name__ == "__main__":

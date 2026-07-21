@@ -3,4 +3,6 @@ __pycache__/
 *.session
 *.session-journal
 .env
+.env.local
+config.json
 .DS_Store

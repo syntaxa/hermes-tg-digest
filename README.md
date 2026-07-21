@@ -1,82 +1,176 @@
 # Hermes TG Digest
 
-Ежедневный дайджест Telegram-каналов на базе Hermes Agent.
+Ежедневный дайджест Telegram-каналов с LLM-суммаризацией.
 
-Гибридная схема: Telethon-сборщик (no_agent) → LLM-генератор (agent) → Telethon-публикатор (no_agent).
+Telethon-сборщик → LLM-генератор → публикация в Telegram-канал.
+Работает как автономный пайплайн внутри [Hermes Agent](https://hermes-agent.nousresearch.com).
 
-## Архитектура
+## Как это работает
 
 ```
-collect.py ──→ Telethon ──→ ~/.hermes/digest/data/today.json
- (no_agent, 03:55 MSK)
-
-LLM-суммаризация ──→ ~/.hermes/digest/output.md
- (Hermes cron, agent, 04:00 MSK)
-
-digest-publish.py ──→ Telethon ──→ Telegram-канал
- (no_agent, 04:02 MSK)
+┌──────────────────────┐
+│ 1. Collect (06:55 MSK)│  Telethon → посты за 24ч → JSON
+└──────────┬───────────┘
+           ↓
+┌──────────────────────┐
+│ 2. Generate + Publish│  LLM → HTML-дайджест → Telegram
+│    (07:00 MSK)        │  (синхронно, в одной джобе)
+└──────────┬───────────┘
+           ↓
+┌──────────────────────┐
+│ 3. Watchdog (07:25)  │  Если gen упал → диагностика в канал
+└──────────────────────┘
 ```
+
+- **Collect** — no_agent скрипт, тихий при успехе
+- **Generate + Publish** — LLM-агент читает JSON, пишет дайджест (HTML), сразу отправляет в канал через Telethon
+- **Watchdog** — no_agent, подстраховка: если output.md не обновлён → уведомление с диагностикой в канал
 
 ## Быстрый старт
 
-1. Получить `api_id` и `api_hash` на [my.telegram.org](https://my.telegram.org)
-2. Создать `~/.hermes/digest/config.json`:
+### 1. Установка
+
+```bash
+git clone https://github.com/syntaxa/hermes-tg-digest.git
+cd hermes-tg-digest
+pip install -r requirements.txt
+```
+
+### 2. Конфигурация
+
+Создайте `config.json` в рабочей директории (по умолчанию `~/.hermes/digest/`):
 
 ```json
 {
   "api_id": 12345,
-  "api_hash": "xxx",
-  "phone": "+790****4567"
+  "api_hash": "your_api_hash_from_my_telegram_org",
+  "phone": "+79001234567",
+  "channel_link": "https://t.me/+invite_link_or_@username",
+  "digest_dir": "~/.hermes/digest",
+  "brand": "@yourusername"
 }
 ```
 
-3. Запустить авторизацию:
+Или используйте переменные окружения (см. `.env.example`):
 
 ```bash
-python collectors/collect.py --auth
+export DIGEST_API_ID=12345
+export DIGEST_API_HASH=xxx
+export DIGEST_PHONE=+79001234567
+export DIGEST_CHANNEL_LINK=https://t.me/+...
 ```
 
-4. Получить ID канала:
+### 3. Авторизация Telethon
+
+**Рекомендуется QR-логин:**
 
 ```bash
-python collectors/collect.py --get-chat-id https://t.me/+invite_link
+python3 collectors/auth_qr.py
 ```
 
-5. Добавить канал в `~/.hermes/digest/channels.json`:
+Или code-based:
+
+```bash
+python3 collectors/auth.py
+```
+
+### 4. Добавьте каналы
+
+Создайте `channels.json` в рабочей директории:
 
 ```json
-[{"id": "@countwithsasha", "title": "Поляков считает: AI, код и кейсы"}]
+[
+  {"id": "@channelusername", "title": "Channel Name"},
+  {"id": -1001234567890, "title": "Private Channel"}
+]
 ```
+
+Получить числовой ID канала:
+
+```bash
+python3 collectors/collect.py --get-chat-id https://t.me/+invite_link
+```
+
+### 5. Запустите сбор и публикацию
+
+```bash
+python3 collectors/collect.py
+python3 publish/digest-publish.sh
+```
+
+### 6. Настройка расписания (Hermes Agent)
+
+В Hermes cron:
+
+| Джоба | Время (MSK) | Тип | Команда |
+|-------|-------------|-----|---------|
+| Collect | 06:55 | no_agent | `digest-collect.sh` |
+| Gen+Pub | 07:00 | agent | LLM-промпт + `publish/digest-publish.sh` |
+| Watchdog | 07:25 | no_agent | `digest-watchdog.sh` |
 
 ## Команды
 
 | Команда | Описание |
-|---|---|
-| `python collect.py` | Собрать посты за 24ч (тихий режим, для cron) |
-| `python collect.py --auth` | Интерактивная авторизация Telethon |
-| `python collect.py --get-chat-id <link>` | Получить числовой ID канала |
-| `python collect.py --channels` | Показать список каналов |
-| `python publish/digest-publish.py` | Опубликовать дайджест в канал |
+|---------|----------|
+| `python3 collectors/collect.py` | Собрать посты за 24ч (тихий, для cron) |
+| `python3 collectors/collect.py --auth` | Интерактивная авторизация |
+| `python3 collectors/collect.py --get-chat-id <link>` | Получить ID канала |
+| `python3 collectors/collect.py --channels` | Показать список каналов |
+| `python3 collectors/auth_qr.py` | QR-логин (рекомендуется) |
+| `python3 collectors/auth.py` | Code-based логин (fallback) |
+| `bash publish/digest-publish.sh` | Опубликовать дайджест |
+| `python3 publish/digest-watchdog.py` | Проверка, что gen сработал |
 
 ## Формат дайджеста
 
-Telegram HTML (parse_mode="html") с группировкой по каналам:
-- Заголовок канала → **жирный текст**
-- Заголовок поста → ссылка (`<a href="..."><b>текст</b></a>`)
-- Саммари — обычный текст после ссылки
-- Умеренные эмодзи (📅, 📡)
-- Русский язык
-- Превью ссылок отключено (`link_preview=False`)
+Telegram HTML через Telethon (`parse_mode="html"`, `link_preview=False`):
 
-## Управление каналами
+```
+📅 Дайджест · 21 июля 2026
 
-Каналы добавляются/удаляются через чат с Hermes — редактируется `~/.hermes/digest/channels.json`.
-Поддерживаются публичные (`@username`) и приватные (ID) каналы.
+📡 <b>Channel Name</b>
+<a href="https://t.me/channel/1234"><b>Заголовок поста</b></a>
+Саммари ключевых идей — 2-4 предложения.
+```
 
-## Расписание (MSK)
+Дайджесты длиннее 4000 символов автоматически разбиваются по каналам.
 
-| Время | Cronjob | Действие |
-|---|---|---|
-| 03:55 | `digest-collect` | Сбор постов за 24ч |
-| 04:00 | `digest-generator` | LLM-суммаризация → output.md |
-| 04:02 | `digest-publish` | Публикация в канал |
+## Структура репозитория
+
+```
+.
+├── LICENSE                 ← MIT
+├── README.md
+├── pyproject.toml
+├── requirements.txt
+├── .env.example            ← шаблон env-переменных
+├── channels.example.json   ← шаблон списка каналов
+├── collectors/
+│   ├── auth.py             ← Code-based auth (fallback)
+│   ├── auth_qr.py          ← QR-логин (preferred)
+│   ├── collect.py          ← Telethon-скрипт сбора
+│   └── config.example.json ← шаблон config.json
+├── publish/
+│   ├── digest-publish.py   ← Telethon-паблишер
+│   ├── digest-publish.sh   ← wrapper для вызова
+│   └── digest-watchdog.py  ← Watchdog ошибок генерации
+└── prompts/
+    └── digest-system.md    ← системный промпт для LLM
+```
+
+## Конфигурация
+
+Все параметры читаются в порядке приоритета: **переменные окружения** → **config.json** → **умолчания**.
+
+| Переменная | config.json ключ | Описание |
+|-----------|-----------------|----------|
+| `DIGEST_API_ID` | `api_id` | API ID с my.telegram.org (int) |
+| `DIGEST_API_HASH` | `api_hash` | API Hash |
+| `DIGEST_PHONE` | `phone` | Номер телефона |
+| `DIGEST_CHANNEL_LINK` | `channel_link` | Ссылка на канал для публикации |
+| `DIGEST_DIR` | `digest_dir` | Рабочая директория (default: `~/.hermes/digest`) |
+| `DIGEST_BRAND` | `brand` | Суффикс в сплите (опционально) |
+
+## Лицензия
+
+MIT — делайте что хотите.

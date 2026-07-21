@@ -1,0 +1,18 @@
+[project]
+name = "hermes-tg-digest"
+version = "1.0.0"
+description = "Ежедневный дайджест Telegram-каналов с LLM-суммаризацией"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Sergey Samoylenko", email = "30318815+syntaxa@users.noreply.github.com" },
+]
+requires-python = ">=3.11"
+dependencies = [
+    "telethon>=1.38",
+    "qrcode[pil]>=7.4",
+    "python-dotenv>=1.0",
+]
+
+[project.urls]
+Repository = "https://github.com/syntaxa/hermes-tg-digest"

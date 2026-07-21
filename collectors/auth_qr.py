@@ -5,19 +5,44 @@ from pathlib import Path
 from telethon import TelegramClient, errors
 import qrcode
 
-BASE = Path.home() / ".hermes" / "digest"
-cfg = json.loads((BASE / "config.json").read_text())
+CONFIG_FILE = Path(os.getenv("DIGEST_CONFIG", "config.json"))
+
+def load_config() -> dict:
+    cfg = {}
+    if CONFIG_FILE.exists():
+        cfg = json.loads(CONFIG_FILE.read_text())
+    env_map = {
+        "DIGEST_API_ID": ("api_id", int),
+        "DIGEST_API_HASH": ("api_hash", str),
+        "DIGEST_PHONE": ("phone", str),
+        "DIGEST_DIR": ("digest_dir", str),
+    }
+    for env_key, (cfg_key, caster) in env_map.items():
+        val = os.getenv(env_key)
+        if val is not None:
+            cfg[cfg_key] = caster(val) if caster is not str else val
+    return cfg
+
+cfg = load_config()
+BASE = Path(os.path.expanduser(cfg.get("digest_dir", "~/.hermes/digest")))
 SESSION_DIR = BASE / "session"
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
-QR_PATH = Path.home() / ".hermes" / "digest" / "auth_qr.png"
+QR_PATH = BASE / "auth_qr.png"
+
 
 async def read_line():
-    """Read one line from stdin (non-blocking, works with process.submit)."""
     loop = asyncio.get_event_loop()
     return (await loop.run_in_executor(None, sys.stdin.readline)).strip()
 
+
 async def main():
-    client = TelegramClient(str(SESSION_DIR / "user"), cfg["api_id"], cfg["api_hash"])
+    api_id = cfg.get("api_id")
+    api_hash = cfg.get("api_hash")
+    if not api_id or not api_hash:
+        print("E: api_id and api_hash required.", file=sys.stderr)
+        sys.exit(1)
+
+    client = TelegramClient(str(SESSION_DIR / "user"), api_id, api_hash)
     await client.connect()
 
     if await client.is_user_authorized():
@@ -50,5 +75,6 @@ async def main():
 
     me = await client.get_me()
     print(f"OK: Authorized as {me.first_name} (@{me.username})")
+
 
 asyncio.run(main())

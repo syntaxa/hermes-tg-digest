@@ -5,13 +5,35 @@ Runs 25 min after generation starts (04:25 UTC / 07:25 MSK).
 If output.md wasn't written today → generation failed → notify channel.
 Silent on success (output.md exists and fresh).
 """
-import json, sys
+import json, sys, os
 from pathlib import Path
 from datetime import datetime, timezone
 from telethon import TelegramClient
 
-BASE = Path.home() / ".hermes" / "digest"
-cfg = json.loads((BASE / "config.json").read_text())
+# --- Configuration -----------------------------------------------------------
+CONFIG_FILE = Path(os.getenv("DIGEST_CONFIG", "config.json"))
+
+def load_config() -> dict:
+    cfg = {}
+    if CONFIG_FILE.exists():
+        cfg = json.loads(CONFIG_FILE.read_text())
+    env_map = {
+        "DIGEST_API_ID": ("api_id", int),
+        "DIGEST_API_HASH": ("api_hash", str),
+        "DIGEST_CHANNEL_LINK": ("channel_link", str),
+        "DIGEST_DIR": ("digest_dir", str),
+    }
+    for env_key, (cfg_key, caster) in env_map.items():
+        val = os.getenv(env_key)
+        if val is not None:
+            cfg[cfg_key] = caster(val) if caster is not str else val
+    return cfg
+
+cfg = load_config()
+
+BASE = Path(os.path.expanduser(cfg.get("digest_dir", "~/.hermes/digest")))
+CHANNEL_LINK = cfg.get("channel_link", "")
+
 OUTPUT_FILE = BASE / "output.md"
 REPORT_FILE = BASE / "data" / "collect-report.json"
 
@@ -19,11 +41,18 @@ TODAY = datetime.now(timezone.utc).date()
 
 
 async def main():
+    if not all([cfg.get("api_id"), cfg.get("api_hash")]):
+        print("ERROR: api_id and api_hash required.", file=sys.stderr)
+        sys.exit(1)
+    if not CHANNEL_LINK:
+        print("ERROR: DIGEST_CHANNEL_LINK is required.", file=sys.stderr)
+        sys.exit(1)
+
     client = TelegramClient(
         str(BASE / "session" / "user"), cfg["api_id"], cfg["api_hash"]
     )
     await client.start()
-    entity = await client.get_entity("https://t.me/+KhrdCfl650llYzNi")
+    entity = await client.get_entity(CHANNEL_LINK)
 
     # 1. Check if output.md exists and is from today
     if OUTPUT_FILE.exists():
@@ -33,7 +62,6 @@ async def main():
             return  # silent exit, all good
 
     # 2. output.md missing or stale → something failed
-    #    Gather diagnostics
     collect_ok = False
     errors = []
     if REPORT_FILE.exists():
@@ -61,7 +89,6 @@ async def main():
             lines.extend(errors)
             lines.append("")
     else:
-        # check if collect ran at all today
         collect_log = Path.home() / ".hermes" / "cron" / "output" / "digest-collector"
         if collect_log.exists():
             lines.append("Коллектор запускался, но не собрал данные (смотри collect-report.json).\n")

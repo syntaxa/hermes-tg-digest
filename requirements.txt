@@ -1,0 +1,8 @@
+# Core
+telethon>=1.38
+
+# QR auth (optional — only needed for auth_qr.py)
+qrcode[pil]>=7.4
+
+# Runtime
+python-dotenv>=1.0
