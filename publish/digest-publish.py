@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Publish digest to Syntax channels digest via Telethon."""
-import asyncio, sys
+import asyncio, sys, re
 from pathlib import Path
 from telethon import TelegramClient
 import json
@@ -10,9 +10,46 @@ cfg = json.loads((BASE / "config.json").read_text())
 OUTPUT_FILE = BASE / "output.md"
 REPORT_FILE = BASE / "data" / "collect-report.json"
 
+MAX_MSG = 4000  # Telegram hard limit ~4096 chars; stay under
+
+
+def split_digest(text: str) -> list[str]:
+    """Split digest at channel headers (\n📡 <b>) to stay under MAX_MSG."""
+    if len(text) <= MAX_MSG:
+        return [text]
+
+    # split on channel headers, keep the delimiter
+    parts = re.split(r"(\n📡 <b>)", text)
+    # recombine: each odd element is a header, even is content between
+    chunks = []
+    buf = parts[0] if parts[0] else ""  # preamble (title + date line)
+    i = 1
+    while i < len(parts):
+        header = parts[i]  # "\n📡 <b>..."
+        body = parts[i + 1] if i + 1 < len(parts) else ""
+        candidate = header + body
+        if len(buf) + len(candidate) <= MAX_MSG:
+            buf += candidate
+        else:
+            if buf:
+                chunks.append(buf)
+            buf = candidate
+        i += 2
+    if buf:
+        chunks.append(buf)
+
+    # Append "ч. N/N" suffix to each chunk
+    total = len(chunks)
+    if total > 1:
+        suffix = "\n\n— ⋅ — ⋅ —\n<i>ч. {}/{} · @syntaxachannel</i>"
+        for idx in range(total):
+            chunks[idx] += suffix.format(idx + 1, total)
+
+    return chunks
+
 
 async def send_digest(client, entity) -> bool:
-    """Send the digest message. Returns True if sent."""
+    """Send the digest message (split if too long). Returns True if sent."""
     if not OUTPUT_FILE.exists():
         print("No output.md found", file=sys.stderr)
         return False
@@ -21,7 +58,11 @@ async def send_digest(client, entity) -> bool:
     if not text:
         return False
 
-    await client.send_message(entity, text, parse_mode="html", link_preview=False)
+    chunks = split_digest(text)
+    for i, chunk in enumerate(chunks, 1):
+        await client.send_message(entity, chunk, parse_mode="html", link_preview=False)
+        print(f"  Part {i}/{len(chunks)} sent ({len(chunk)} chars)")
+
     print("✅ Digest published")
     return True
 
