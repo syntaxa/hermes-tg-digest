@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Publish digest to Telegram channel via Telethon."""
+"""Publish digest to Telegram channel via Telethon (bot mode)."""
 import asyncio, sys, re, os, json
 from pathlib import Path
 from datetime import datetime, timezone
 from telethon import TelegramClient
+from telethon.tl.types import PeerChannel
 
 # --- Configuration -----------------------------------------------------------
 # Priority: env var > config.json > default
@@ -17,7 +18,7 @@ def load_config() -> dict:
     env_map = {
         "DIGEST_API_ID": ("api_id", int),
         "DIGEST_API_HASH": ("api_hash", str),
-        "DIGEST_PHONE": ("phone", str),
+        "DIGEST_BOT_TOKEN": ("bot_token", str),
         "DIGEST_CHANNEL_LINK": ("channel_link", str),
         "DIGEST_DIR": ("digest_dir", str),
         "DIGEST_BRAND": ("brand", str),
@@ -32,10 +33,12 @@ cfg = load_config()
 
 BASE = Path(os.path.expanduser(cfg.get("digest_dir", "~/.hermes/digest")))
 CHANNEL_LINK = cfg.get("channel_link", "")
+TARGET_CHANNEL_ID = cfg.get("target_channel_id")
 BRAND = cfg.get("brand", "")
 
 OUTPUT_FILE = BASE / "output.md"
 REPORT_FILE = BASE / "data" / "collect-report.json"
+BOT_SESSION = BASE / "session" / "bot"
 
 MAX_MSG = 4000  # Telegram hard limit ~4096 chars; stay under
 
@@ -146,18 +149,28 @@ async def cleanup():
 
 
 async def main():
-    if not all([cfg.get("api_id"), cfg.get("api_hash")]):
-        print("ERROR: api_id and api_hash required. Set DIGEST_API_ID/DIGEST_API_HASH env vars or create config.json.", file=sys.stderr)
+    api_id = cfg.get("api_id")
+    api_hash = cfg.get("api_hash")
+    bot_token = cfg.get("bot_token")
+
+    if not bot_token:
+        print("ERROR: bot_token required in config.json or DIGEST_BOT_TOKEN env.", file=sys.stderr)
+        sys.exit(1)
+    if not all([api_id, api_hash]):
+        print("ERROR: api_id and api_hash required.", file=sys.stderr)
         sys.exit(1)
     if not CHANNEL_LINK:
         print("ERROR: DIGEST_CHANNEL_LINK is required.", file=sys.stderr)
         sys.exit(1)
 
-    client = TelegramClient(
-        str(BASE / "session" / "user"), cfg["api_id"], cfg["api_hash"]
-    )
-    await client.start()
-    entity = await client.get_entity(CHANNEL_LINK)
+    client = TelegramClient(str(BOT_SESSION), api_id, api_hash)
+    await client.start(bot_token=bot_token)
+
+    # Bot can't resolve invite links — use channel ID directly
+    if TARGET_CHANNEL_ID:
+        entity = await client.get_entity(PeerChannel(TARGET_CHANNEL_ID))
+    else:
+        entity = await client.get_entity(CHANNEL_LINK)
 
     # 1. Send the digest (if available)
     digest_sent = await send_digest(client, entity)
