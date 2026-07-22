@@ -2,8 +2,8 @@
 """
 Digest Watchdog — no_agent cron.
 Runs 25 min after generation starts (04:25 UTC / 07:25 MSK).
-If output.md wasn't written today → generation failed → notify channel.
-Silent on success (output.md exists and fresh).
+If digest wasn't published → generation failed → notify channel.
+Silent on success (marker file exists and is fresh).
 """
 import json, sys, os
 from pathlib import Path
@@ -33,11 +33,22 @@ cfg = load_config()
 
 BASE = Path(os.path.expanduser(cfg.get("digest_dir", "~/.hermes/digest")))
 CHANNEL_LINK = cfg.get("channel_link", "")
-
 OUTPUT_FILE = BASE / "output.md"
 REPORT_FILE = BASE / "data" / "collect-report.json"
+MARKER_FILE = BASE / ".digest-published"
 
 TODAY = datetime.now(timezone.utc).date()
+
+
+def marker_ok():
+    """Check if digest generation succeeded via .digest-published marker."""
+    if not MARKER_FILE.exists():
+        return False
+    try:
+        mtime = datetime.fromtimestamp(MARKER_FILE.stat().st_mtime, tz=timezone.utc).date()
+        return mtime == TODAY
+    except Exception:
+        return False
 
 
 async def main():
@@ -54,12 +65,10 @@ async def main():
     await client.start()
     entity = await client.get_entity(CHANNEL_LINK)
 
-    # 1. Check if output.md exists and is from today
-    if OUTPUT_FILE.exists():
-        mtime = datetime.fromtimestamp(OUTPUT_FILE.stat().st_mtime, tz=timezone.utc).date()
-        if mtime == TODAY:
-            print("✓ output.md is fresh — generation succeeded")
-            return  # silent exit, all good
+    # 1. Check if digest was published today via marker
+    if marker_ok():
+        print("✓ digest published today — watchdog silent")
+        return  # silent exit, all good
 
     # 2. output.md missing or stale → something failed
     collect_ok = False

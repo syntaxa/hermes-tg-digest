@@ -2,6 +2,7 @@
 """Publish digest to Telegram channel via Telethon."""
 import asyncio, sys, re, os, json
 from pathlib import Path
+from datetime import datetime, timezone
 from telethon import TelegramClient
 
 # --- Configuration -----------------------------------------------------------
@@ -133,13 +134,15 @@ async def send_transparency(client, entity) -> bool:
 
 
 async def cleanup():
-    """Remove processed data files."""
+    """Remove processed data files, leave .digest-published marker."""
     OUTPUT_FILE.unlink(missing_ok=True)
     for f in (BASE / "data").glob("*.json"):
         if f.name == "collect-report.json":
             continue
         f.unlink()
         print(f"  Cleaned: data/{f.name}")
+    # Marker for watchdog: publish succeeded
+    (BASE / ".digest-published").write_text(datetime.now(timezone.utc).isoformat())
 
 
 async def main():
