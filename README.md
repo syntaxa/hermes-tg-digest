@@ -97,19 +97,22 @@ python3 collectors/auth.py
 
 ### 7. Добавьте каналы
 
-Создайте `~/.hermes/digest/channels.json`:
+Каналы добавляются и удаляются через Hermes:
 
-```json
-[
-  {"id": "@username", "title": "Название канала"},
-  {"id": -1001234567890, "title": "Приватный канал"}
-]
+```
+добавить @username
+добавить https://t.me/+invite_link
+удалить @username
+каналы
 ```
 
-Каналы можно добавлять позже через Hermes:
-- `добавить @channel` — добавить канал
-- `удалить @channel` — удалить канал
-- `каналы` — список каналов
+Или через скрипт:
+
+```bash
+python3 collectors/collect.py --add @username
+python3 collectors/collect.py --remove @username
+python3 collectors/collect.py --channels
+```
 
 ### 8. Протестируйте
 
