@@ -1,7 +1,7 @@
 # Hermes TG Digest — Agent Setup Guide
 
 Когда пользователь говорит «настрой дайджест» или «разверни проект», используй
-этот гайд для интерактивного onboarding’а.
+этот гайд для интерактивного onboarding'а.
 
 ## Workflow: Первичная настройка
 
@@ -42,6 +42,8 @@ pip install -r requirements.txt
 
 **4a. API ID и API Hash**
 
+Зайди на [my.telegram.org](https://my.telegram.org) → API Development Tools → создать приложение.
+
 ```
 Question: Введи API ID с my.telegram.org (целое число)
 Choices: []
@@ -56,18 +58,37 @@ Choices: []
 **4b. Номер телефона**
 
 ```
-Question: Номер телефона для Telegram (в формате +79001234567)
+Question: Номер телефона для Telegram (в формате +790****4567)
 Choices: []
 ```
 
-**4c. Канал для публикации дайджеста**
+**4c. Бот для публикации**
+
+Напиши [@BotFather](https://t.me/BotFather) → `/newbot` → получи токен.
+Добавь бота в канал как **админа** с правом **публикации сообщений**.
+
+```
+Question: Введи bot_token от @BotFather
+Choices: []
+```
+
+**4d. Канал для публикации**
 
 ```
 Question: Ссылка на канал, куда публиковать дайджест (https://t.me/... или @username)
 Choices: []
 ```
 
-**4d. Brand (опционально)**
+После получения ссылки — определи `target_channel_id`:
+
+```bash
+cd ~/hermes-tg-digest
+python3 collectors/collect.py --get-chat-id <ссылка>
+```
+
+Если команда не сработала (бот не может резолвить инвайт) — попроси пользователя узнать ID через @userinfobot или @getidsbot в канале.
+
+**4e. Brand (опционально)**
 
 ```
 Question: Подпись в разбитых сообщениях (например @yourusername). Оставь пустым если не нужно.
@@ -83,6 +104,8 @@ Choices: []
   "api_id": <api_id>,
   "api_hash": "<api_hash>",
   "phone": "<phone>",
+  "bot_token": "<bot_token>",
+  "target_channel_id": <target_channel_id>,
   "channel_link": "<channel_link>",
   "digest_dir": "~/.hermes/digest",
   "brand": "<brand>"
@@ -158,7 +181,30 @@ cd ~/hermes-tg-digest
 python3 collectors/collect.py --channels
 ```
 
-Если каналы отображаются — всё ок. Если нет — вернись к шагу 6.
+Проверь публикацию от бота:
+
+```bash
+cd ~/hermes-tg-digest
+DIGEST_CONFIG=~/.hermes/digest/config.json python3 -c "
+import asyncio, json, os
+from pathlib import Path
+from telethon import TelegramClient
+from telethon.tl.types import PeerChannel
+cfg = json.load(open(os.path.expanduser('~/.hermes/digest/config.json')))
+BASE = Path(os.path.expanduser('~/.hermes/digest'))
+async def test():
+    client = TelegramClient(str(BASE / 'session' / 'bot'), cfg['api_id'], cfg['api_hash'])
+    await client.start(bot_token=cfg['bot_token'])
+    entity = await client.get_entity(PeerChannel(cfg['target_channel_id']))
+    print(f'Channel: {entity.title}')
+    await client.send_message(entity, '🔧 Тест — бот подключен', link_preview=False)
+    print('✅ Test sent')
+    await client.disconnect()
+asyncio.run(test())
+"
+```
+
+Проверь канал — тестовое сообщение должно появиться от имени бота.
 
 ### 9. Что дальше
 
@@ -193,5 +239,6 @@ python3 collectors/collect.py --channels
 - **FloodWaitError** — подожди и повтори через 10-15 минут
 - **SessionPasswordNeededError** — запроси 2FA пароль
 - **InviteHashExpiredError** — ссылка истекла, нужна новая
+- **BotMethodInvalidError** — бот не может резолвить инвайт-ссылку, используй `target_channel_id`
 - **ModuleNotFoundError** — проверь `pip install -r requirements.txt`
 - **Не авторизован** — повтори шаг 7
