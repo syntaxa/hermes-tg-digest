@@ -77,4 +77,4 @@
 2. Прочитай самый свежий JSON.
 3. Сгруппируй посты по каналам, сформируй дайджест по правилам выше.
 4. Сохрани результат в `~/.hermes/digest/output.md` через `write_file`.
-5. Запусти публикацию: выполни в `terminal` команду `python3 /home/hermes/hermes-tg-digest/publish/digest-publish.sh`.
+5. Запусти публикацию: выполни в `terminal` команду `bash publish/digest-publish.sh` (скрипт использует REPO_DIR для определения пути к проекту, DIGEST_CONFIG передаётся автоматически).

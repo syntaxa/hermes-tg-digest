@@ -97,6 +97,12 @@ Choices: []
 
 ### 5. Создание config.json
 
+Создай директорию и файл через `write_file`:
+
+```bash
+mkdir -p ~/.hermes/digest/{session,data}
+```
+
 Создай `~/.hermes/digest/config.json` через `write_file`:
 
 ```json
@@ -110,11 +116,6 @@ Choices: []
   "digest_dir": "~/.hermes/digest",
   "brand": "<brand>"
 }
-```
-
-Создай директорию, если её нет:
-```bash
-mkdir -p ~/.hermes/digest/{session,data}
 ```
 
 ### 6. Добавление каналов для мониторинга
@@ -132,14 +133,17 @@ cd ~/hermes-tg-digest
 python3 collectors/collect.py --get-chat-id <link>
 ```
 
-Собери ID и имена в `channels.json`:
+Собери результат в `~/.hermes/digest/channels.json` через `write_file`:
 
 ```json
 [
-  {"id": -1001234567890, "title": "Channel Name"},
-  {"id": "@channelusername", "title": "Another Channel"}
+  {"id": "@channelusername", "title": "Название канала"},
+  {"id": -1001234567890, "title": "Приватный канал"}
 ]
 ```
+
+Поле `id` — строка (`@username`) или число (отрицательный ID канала).
+Поле `title` — название для справки (LLM его не использует).
 
 При ошибке `InviteHashExpiredError` — сообщи пользователю и попроси новую ссылку.
 
@@ -206,7 +210,44 @@ asyncio.run(test())
 
 Проверь канал — тестовое сообщение должно появиться от имени бота.
 
-### 9. Что дальше
+### 9. Создание Hermes skill
+
+Создай скилл `telegram-digest` для LLM-генератора:
+
+```bash
+cat ~/hermes-tg-digest/prompts/digest-system.md
+```
+
+Содержимое этого файла — системный промпт для LLM. Зарегистрируй его как Hermes skill через `skill_manage(action='create')` с именем `telegram-digest` и категорией `workflow`.
+
+Этот скилл загружается в cron-джобе `digest-generator` и определяет:
+- Как LLM группирует посты по каналам
+- Формат HTML-дайджеста (теги, эмодзи, ссылки)
+- Детекцию авторских дайджестов (confidence ≥ 7)
+- Шаг публикации (вызов `bash publish/digest-publish.sh`)
+
+### 10. Настройка shell-обёрток
+
+В репозитории уже есть три обёртки, которые:
+- Определяют `REPO_DIR` относительно своего расположения
+- Экспортируют `DIGEST_CONFIG` (путь к `~/.hermes/digest/config.json`)
+- Вызывают Python-скрипт с аргументами
+
+| Обёртка | Вызывает | Тип cron |
+|---------|----------|----------|
+| `collectors/digest-collect.sh` | `collectors/collect.py` | no_agent |
+| `publish/digest-publish.sh` | `publish/digest-publish.py` | вызывается LLM |
+| `publish/digest-watchdog.sh` | `publish/digest-watchdog.py` | no_agent |
+
+Сделай исполняемыми:
+
+```bash
+chmod +x ~/hermes-tg-digest/collectors/digest-collect.sh
+chmod +x ~/hermes-tg-digest/publish/digest-publish.sh
+chmod +x ~/hermes-tg-digest/publish/digest-watchdog.sh
+```
+
+### 11. Что дальше
 
 Скажи пользователю:
 
@@ -224,11 +265,14 @@ asyncio.run(test())
 
 Если пользователь согласился настроить cron, создай через `cronjob`:
 
-| Название | Расписание (UTC) | Тип | Скрипт |
-|----------|-----------------|-----|--------|
-| digest-collector | 55 3 * * * | no_agent | `digest-collect.sh` |
-| digest-generator | 0 4 * * * | agent | skills=`telegram-digest` |
-| digest-watchdog | 25 4 * * * | no_agent | `digest-watchdog.sh` |
+| Название | Расписание (UTC) | Тип | Скрипт | Скиллы |
+|----------|-----------------|-----|--------|--------|
+| digest-collector | `55 3 * * *` | no_agent | `~/hermes-tg-digest/collectors/digest-collect.sh` | — |
+| digest-generator | `0 4 * * *` | agent | LLM промпт | `telegram-digest` |
+| digest-watchdog | `25 4 * * *` | no_agent | `~/hermes-tg-digest/publish/digest-watchdog.sh` | — |
+
+**DIGEST_CONFIG** передаётся автоматически через обёртки (export в каждом .sh).
+Не нужно дублировать env var в cron-джобах.
 
 Уже существующие джобы не пересоздавай — проверь через `cronjob action='list'`.
 
@@ -242,3 +286,4 @@ asyncio.run(test())
 - **BotMethodInvalidError** — бот не может резолвить инвайт-ссылку, используй `target_channel_id`
 - **ModuleNotFoundError** — проверь `pip install -r requirements.txt`
 - **Не авторизован** — повтори шаг 7
+- **Script not found** — проверь что .sh обёртки созданы и `chmod +x` (шаг 10)
