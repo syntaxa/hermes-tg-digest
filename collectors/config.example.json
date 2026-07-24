@@ -4,7 +4,6 @@
   "phone": "+790****4567",
   "bot_token": "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz",
   "target_channel_id": -1001234567890,
-  "channel_link": "https://t.me/+your_invite_link_or_@username",
   "digest_dir": "~/.hermes/digest",
   "brand": "@yourusername"
 }
