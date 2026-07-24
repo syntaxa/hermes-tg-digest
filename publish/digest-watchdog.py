@@ -22,7 +22,6 @@ def load_config() -> dict:
         "DIGEST_API_ID": ("api_id", int),
         "DIGEST_API_HASH": ("api_hash", str),
         "DIGEST_BOT_TOKEN": ("bot_token", str),
-        "DIGEST_CHANNEL_LINK": ("channel_link", str),
         "DIGEST_DIR": ("digest_dir", str),
     }
     for env_key, (cfg_key, caster) in env_map.items():
@@ -34,7 +33,6 @@ def load_config() -> dict:
 cfg = load_config()
 
 BASE = Path(os.path.expanduser(cfg.get("digest_dir", "~/.hermes/digest")))
-CHANNEL_LINK = cfg.get("channel_link", "")
 TARGET_CHANNEL_ID = cfg.get("target_channel_id")
 OUTPUT_FILE = BASE / "output.md"
 REPORT_FILE = BASE / "data" / "collect-report.json"
@@ -66,17 +64,14 @@ async def main():
     if not all([api_id, api_hash]):
         print("ERROR: api_id and api_hash required.", file=sys.stderr)
         sys.exit(1)
-    if not CHANNEL_LINK:
-        print("ERROR: DIGEST_CHANNEL_LINK is required.", file=sys.stderr)
+    if not TARGET_CHANNEL_ID:
+        print("ERROR: target_channel_id required.", file=sys.stderr)
         sys.exit(1)
 
     client = TelegramClient(str(BOT_SESSION), api_id, api_hash)
     await client.start(bot_token=bot_token)
 
-    if TARGET_CHANNEL_ID:
-        entity = await client.get_entity(PeerChannel(TARGET_CHANNEL_ID))
-    else:
-        entity = await client.get_entity(CHANNEL_LINK)
+    entity = await client.get_entity(PeerChannel(TARGET_CHANNEL_ID))
 
     # 1. Check if digest was published today via marker
     if marker_ok():
