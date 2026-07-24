@@ -37,65 +37,56 @@ pip install -r requirements.txt
 Напишите [@BotFather](https://t.me/BotFather), выполните `/newbot`, получите `bot_token`.
 Добавьте бота в канал, куда будет публиковаться дайджест, как **админа** с правом **публикации сообщений**.
 
-### 4. Узнайте ID канала
+### 4. Настройте через Hermes
+
+Попросите Hermes настроить дайджест — он сам создаст конфиг, авторизуется и добавит каналы:
+
+```
+Настрой дайджест.
+Вот мои данные:
+- api_id: 12345
+- api_hash: ваш_api_hash
+- phone: +790****5678
+- bot_token: 1234567890:ABCdef...
+- канал для публикации: https://t.me/ваш_канал
+- каналы для сбора: https://t.me/channel1, @channel2, https://t.me/+invite
+```
+
+Hermes сам:
+- Создаст `~/.hermes/digest/config.json`
+- Разрешит ID каналов из ссылок
+- Авторизуется через QR или SMS
+- Настроит cron-расписание
+
+### 5. Протестируйте
 
 ```bash
-python3 collectors/collect.py --get-chat-id https://t.me/ваш_канал
+# Собрать посты
+python3 collectors/collect.py
+
+# Сформировать дайджест (через Hermes или вручную)
+# Hermes: "сгенерируй дайджест"
+# Вручную: скрипт collect.py → output.md → publish
+
+# Опубликовать
+python3 publish/digest-publish.sh
 ```
 
-Запишите числовой ID (отрицательное число, например `-1001234567890`).
+Проверьте канал — дайджест должен появиться от имени бота.
 
-### 5. Создайте конфиг
+### 6. Cron-расписание
 
-Создайте `~/.hermes/digest/config.json`:
+Hermes настроит три джобы автоматически при запросе «настрой дайджест».
 
-```bash
-mkdir -p ~/.hermes/digest
-```
+Если настраиваете вручную:
 
-```json
-{
-  "api_id": 12345,
-  "api_hash": "ваш_api_hash",
-  "phone": "+79012345678",
-  "bot_token": "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz",
-  "target_channel_id": -1001234567890,
-  "channel_link": "https://t.me/ваш_канал",
-  "digest_dir": "~/.hermes/digest",
-  "brand": "Ваш Дайджест"
-}
-```
+| Джоба | Время (MSK) | Тип | Скрипт |
+|-------|-------------|-----|--------|
+| Collect | 06:55 | no_agent | `digest-collect.sh` |
+| Gen+Pub | 07:00 | LLM | Промпт + `digest-publish.sh` |
+| Watchdog | 07:25 | no_agent | `digest-watchdog.sh` |
 
-| Поле | Обязательно | Описание |
-|------|-------------|----------|
-| `api_id` | ✅ | С my.telegram.org |
-| `api_hash` | ✅ | С my.telegram.org |
-| `phone` | ✅ | Номер телефона (для user-сессии сборщика) |
-| `bot_token` | ✅ | Токен от @BotFather (для публикации) |
-| `target_channel_id` | ✅ | Числовой ID канала (отрицательное число) |
-| `channel_link` | ✅ | Ссылка на канал (для user-сессии) |
-| `digest_dir` | ❌ | Рабочая директория (по умолчанию `~/.hermes/digest`) |
-| `brand` | ❌ | Суффикс в разделителе частей дайджеста |
-
-### 6. Авторизуйтесь
-
-Сессия нужна только для **сбора** постов (от имени пользователя). Публикация идёт от бота.
-
-**QR-рекомендуется** (без ввода пароля):
-
-```bash
-python3 collectors/auth_qr.py
-```
-
-Отсканируйте QR-код в Telegram на телефоне.
-
-Или по коду:
-
-```bash
-python3 collectors/auth.py
-```
-
-### 7. Добавьте каналы
+## Управление каналами
 
 Каналы добавляются и удаляются через Hermes:
 
@@ -114,43 +105,11 @@ python3 collectors/collect.py --remove @username
 python3 collectors/collect.py --channels
 ```
 
-### 8. Протестируйте
-
-```bash
-# Собрать посты
-python3 collectors/collect.py
-
-# Сформировать дайджест (через Hermes или вручную)
-python3 prompts/digest-system.md  # или попросите Hermes сформировать
-
-# Опубликовать
-python3 publish/digest-publish.sh
-```
-
-Проверьте канал — дайджест должен появиться от имени бота.
-
-### 9. Настройте расписание (Hermes Agent)
-
-Попросите Hermes настроить три cron-джобы:
-
-```
-Собери мне дайджест и настрой cron по расписанию из скилла telegram-digest
-```
-
-Или настройте вручную:
-
-| Джоба | Время (MSK) | Тип | Скрипт |
-|-------|-------------|-----|--------|
-| Collect | 06:55 | no_agent | `digest-collect.sh` |
-| Gen+Pub | 07:00 | LLM | Промпт + `digest-publish.sh` |
-| Watchdog | 07:25 | no_agent | `digest-watchdog.sh` |
-
 ## Команды
 
 | Команда | Описание |
 |---------|----------|
 | `python3 collectors/collect.py` | Собрать посты за 24ч |
-| `python3 collectors/collect.py --get-chat-id <ссылка>` | Получить ID канала |
 | `python3 collectors/collect.py --channels` | Показать список каналов |
 | `python3 collectors/auth_qr.py` | QR-логин |
 | `python3 collectors/auth.py` | Code-based логин |
@@ -186,8 +145,7 @@ hermes-tg-digest/
 ├── collectors/
 │   ├── auth.py               ← Code-based auth
 │   ├── auth_qr.py            ← QR-логин (рекомендуется)
-│   ├── collect.py            ← Сбор постов
-│   └── config.example.json   ← Шаблон конфига
+│   └── collect.py            ← Сбор постов
 ├── publish/
 │   ├── digest-publish.py     ← Публикация (от бота)
 │   ├── digest-publish.sh     ← Wrapper для публикации
