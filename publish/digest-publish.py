@@ -19,7 +19,6 @@ def load_config() -> dict:
         "DIGEST_API_ID": ("api_id", int),
         "DIGEST_API_HASH": ("api_hash", str),
         "DIGEST_BOT_TOKEN": ("bot_token", str),
-        "DIGEST_CHANNEL_LINK": ("channel_link", str),
         "DIGEST_DIR": ("digest_dir", str),
         "DIGEST_BRAND": ("brand", str),
     }
@@ -32,7 +31,6 @@ def load_config() -> dict:
 cfg = load_config()
 
 BASE = Path(os.path.expanduser(cfg.get("digest_dir", "~/.hermes/digest")))
-CHANNEL_LINK = cfg.get("channel_link", "")
 TARGET_CHANNEL_ID = cfg.get("target_channel_id")
 BRAND = cfg.get("brand", "")
 
@@ -105,8 +103,8 @@ async def send_transparency(client, entity) -> bool:
     if not report:
         return False
 
-    errors = [ch for ch in report["channels"] if ch.get("status") == "error"]
-    if not errors:
+    errs = [ch for ch in report["channels"] if ch.get("status") == "error"]
+    if not errs:
         print("  ✓ No collection errors to report")
         return False
 
@@ -118,7 +116,7 @@ async def send_transparency(client, entity) -> bool:
         f"<b>Успешно:</b> {ok_count} из {total} каналов\n",
     ]
 
-    for ch in errors:
+    for ch in errs:
         name = ch.get("title") or str(ch.get("id", "?"))
         err_type = ch.get("error", "UNKNOWN")
         detail = ch.get("detail", "")
@@ -132,7 +130,7 @@ async def send_transparency(client, entity) -> bool:
 
     text = "\n".join(lines)
     await client.send_message(entity, text, parse_mode="html", link_preview=False)
-    print(f"  ⚠️ Transparency: sent {len(errors)} errors to channel")
+    print(f"  ⚠️ Transparency: sent {len(errs)} errors to channel")
     return True
 
 
@@ -159,18 +157,14 @@ async def main():
     if not all([api_id, api_hash]):
         print("ERROR: api_id and api_hash required.", file=sys.stderr)
         sys.exit(1)
-    if not CHANNEL_LINK:
-        print("ERROR: DIGEST_CHANNEL_LINK is required.", file=sys.stderr)
+    if not TARGET_CHANNEL_ID:
+        print("ERROR: target_channel_id required in config.json.", file=sys.stderr)
         sys.exit(1)
 
     client = TelegramClient(str(BOT_SESSION), api_id, api_hash)
     await client.start(bot_token=bot_token)
 
-    # Bot can't resolve invite links — use channel ID directly
-    if TARGET_CHANNEL_ID:
-        entity = await client.get_entity(PeerChannel(TARGET_CHANNEL_ID))
-    else:
-        entity = await client.get_entity(CHANNEL_LINK)
+    entity = await client.get_entity(PeerChannel(TARGET_CHANNEL_ID))
 
     # 1. Send the digest (if available)
     digest_sent = await send_digest(client, entity)
