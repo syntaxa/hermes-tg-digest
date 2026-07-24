@@ -109,13 +109,7 @@ Hermes настроит три джобы автоматически при за
 каналы
 ```
 
-Или через скрипт:
-
-```bash
-python3 collectors/collect.py --add @username
-python3 collectors/collect.py --remove @username
-python3 collectors/collect.py --channels
-```
+Или напрямую редактируя `~/.hermes/digest/channels.json`.
 
 ## Команды
 
@@ -201,8 +195,7 @@ Runtime (вне репозитория):
 │   ├── user.session         ← сессия пользователя (для сбора)
 │   └── bot.session          ← сессия бота (для публикации)
 ├── data/
-│   ├── YYYY-MM-DD.json      ← посты за день
-│   └── collect-report.json  ← отчёт сборщика
+│   └── YYYY-MM-DD.json      ← посты за день
 ├── output.md                ← сгенерированный дайджест (удаляется после публикации)
 └── .digest-published        ← маркер успешной публикации
 ```
