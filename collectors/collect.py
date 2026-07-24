@@ -7,7 +7,6 @@ Designed for no_agent cron usage: silent on success, errors to stderr.
 Usage:
   python collect.py                    # collect last 24h posts (silent on success)
   python collect.py --auth             # interactive authentication
-  python collect.py --get-chat-id <link>  # resolve invite/username to numeric ID
 """
 import asyncio
 import json
@@ -18,8 +17,6 @@ from datetime import datetime, timezone, timedelta
 
 from telethon import TelegramClient, errors
 from telethon.errors import SessionPasswordNeededError
-from telethon.tl.functions.messages import ImportChatInviteRequest
-from telethon.tl.types import InputPeerChannel
 
 # --- Configuration -----------------------------------------------------------
 CONFIG_FILE = Path(os.getenv("DIGEST_CONFIG", "config.json"))
@@ -60,11 +57,6 @@ def load_channels():
         return json.load(f)
 
 
-def save_channels(channels):
-    with open(CHANNELS_FILE, "w") as f:
-        json.dump(channels, f, ensure_ascii=False, indent=2)
-
-
 # ─────────────────────────────────────────────
 # main
 # ─────────────────────────────────────────────
@@ -78,13 +70,11 @@ async def main():
         await collect_posts()
     elif args[0] == "--auth":
         await auth_mode()
-    elif args[0] == "--get-chat-id" and len(args) >= 2:
-        await resolve_chat_id(args[1])
     elif args[0] == "--channels":
         print(json.dumps(load_channels(), ensure_ascii=False, indent=2))
     else:
         print(
-            "Usage: python collect.py [--auth|--get-chat-id <link>|--channels]",
+            "Usage: python collect.py [--auth|--channels]",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -93,17 +83,6 @@ async def main():
 # ─────────────────────────────────────────────
 # client helpers
 # ─────────────────────────────────────────────
-
-
-async def get_client():
-    config = _get_api_creds()
-    client = TelegramClient(
-        str(SESSION_DIR / "user"),
-        config["api_id"],
-        config["api_hash"],
-    )
-    await client.start()
-    return client, config
 
 
 def _get_api_creds():
@@ -135,7 +114,7 @@ async def auth_mode():
 
     phone = cfg.get("phone")
     if not phone:
-        phone = input("Phone (+79001234567): ")
+        phone = input("Phone (+790****4567): ")
 
     await client.send_code_request(phone)
     code = input("Code (with spaces if needed): ")
@@ -149,36 +128,6 @@ async def auth_mode():
     me = await client.get_me()
     print(f"✅ Authorized as {me.first_name} (@{me.username})")
     print(f"   Session saved to {SESSION_DIR / 'user.session'}")
-
-
-# ─────────────────────────────────────────────
-# resolve chat ID
-# ─────────────────────────────────────────────
-
-
-async def resolve_chat_id(link: str):
-    """Resolve invite link or @username to numeric channel ID."""
-    client, _ = await get_client()
-    try:
-        entity = await client.get_entity(link)
-        print(f"Title:     {entity.title}")
-        print(f"Chat ID:   {entity.id}")
-        print(f"Username:  @{getattr(entity, 'username', 'N/A')}")
-        print()
-        print("# You can now add to channels.json:")
-        print(json.dumps(
-            [{"id": entity.id, "title": entity.title}],
-            ensure_ascii=False, indent=2
-        ))
-    except errors.rpcerrorlist.InviteHashExpiredError:
-        print("❌ Invite link expired or invalid.", file=sys.stderr)
-        sys.exit(1)
-    except ValueError as e:
-        print(f"❌ Cannot resolve: {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Error: {type(e).__name__}: {e}", file=sys.stderr)
-        sys.exit(1)
 
 
 # ─────────────────────────────────────────────
