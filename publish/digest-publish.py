@@ -20,7 +20,7 @@ def load_config() -> dict:
         "DIGEST_API_HASH": ("api_hash", str),
         "DIGEST_BOT_TOKEN": ("bot_token", str),
         "DIGEST_DIR": ("digest_dir", str),
-        "DIGEST_BRAND": ("brand", str),
+        "DIGEST_TAG": ("digest-tag", str),
     }
     for env_key, (cfg_key, caster) in env_map.items():
         val = os.getenv(env_key)
@@ -32,7 +32,7 @@ cfg = load_config()
 
 BASE = Path(os.path.expanduser(cfg.get("digest_dir", "~/.hermes/digest")))
 TARGET_CHANNEL_ID = cfg.get("target_channel_id")
-BRAND = cfg.get("brand", "")
+DIGEST_TAG = cfg.get("digest-tag", "")
 
 OUTPUT_FILE = BASE / "output.md"
 REPORT_FILE = BASE / "data" / "collect-report.json"
@@ -41,8 +41,57 @@ BOT_SESSION = BASE / "session" / "bot"
 MAX_MSG = 4000  # Telegram hard limit ~4096 chars; stay under
 
 
+def hard_split_section(block: str, limit: int) -> list[str]:
+    """Split a single channel section that exceeds MAX_MSG (e.g. авторский
+    дайджест вставлен целиком). Breaks at post-title boundaries
+    (\n<a href="), then at paragraph boundaries. Every piece is valid
+    standalone HTML (all tags are closed within their paragraph)."""
+    # 1. split at post-title boundaries
+    segs = re.split(r"(\n<a href=\")", block)
+    units = [segs[0]] if segs[0] else []
+    i = 1
+    while i < len(segs):
+        units.append(segs[i] + (segs[i + 1] if i + 1 < len(segs) else ""))
+        i += 2
+    # 2. paragraph-split any unit that alone exceeds limit
+    final_units = []
+    for u in units:
+        if len(u) <= limit:
+            final_units.append(u)
+            continue
+        paras = re.split(r"(\n\n)", u)
+        buf = paras[0] if paras[0] else ""
+        i = 1
+        while i < len(paras):
+            piece = paras[i] + (paras[i + 1] if i + 1 < len(paras) else "")
+            if len(buf) + len(piece) <= limit:
+                buf += piece
+            else:
+                if buf:
+                    final_units.append(buf)
+                buf = piece
+            i += 2
+        if buf:
+            final_units.append(buf)
+    # 3. greedy pack units into pieces <= limit
+    pieces = []
+    buf = ""
+    for u in final_units:
+        if len(buf) + len(u) <= limit:
+            buf += u
+        else:
+            if buf:
+                pieces.append(buf)
+            buf = u
+    if buf:
+        pieces.append(buf)
+    return pieces
+
+
 def split_digest(text: str) -> list[str]:
-    """Split digest at channel headers (\\n📡 <b>) to stay under MAX_MSG."""
+    """Split digest at channel headers (\n📡 <b>) to stay under MAX_MSG.
+    Sections that alone exceed MAX_MSG are hard-split at post/paragraph
+    boundaries (sub-pieces labelled 'ч. N/M (продолжение)')."""
     if len(text) <= MAX_MSG:
         return [text]
 
@@ -66,9 +115,23 @@ def split_digest(text: str) -> list[str]:
 
     total = len(chunks)
     if total > 1:
-        suffix = "\n\n— ⋅ — ⋅ —\n<i>ч. {}/{}" + (f" · {BRAND}" if BRAND else "") + "</i>"
-        for idx in range(total):
-            chunks[idx] += suffix.format(idx + 1, total)
+        tag_part = f" · {DIGEST_TAG}" if DIGEST_TAG else ""
+        suffix_tpl = "\n\n— ⋅ — ⋅ —\n<i>ч. {}/{}" + tag_part + "</i>"
+        expanded = []
+        for idx, chunk in enumerate(chunks):
+            label = f"ч. {idx + 1}/{total}"
+            suffix = suffix_tpl.format(idx + 1, total)
+            if len(chunk) + len(suffix) <= MAX_MSG:
+                expanded.append(chunk + suffix)
+                continue
+            # Oversized section (single channel section > MAX_MSG).
+            # Hard-split the raw chunk; sub-pieces share the part label.
+            cont_suffix = "\n\n— ⋅ — ⋅ —\n<i>" + label + " (продолжение)" + tag_part + "</i>"
+            limit = MAX_MSG - len(cont_suffix)
+            subs = hard_split_section(chunk, limit)
+            for j, sub in enumerate(subs):
+                expanded.append(sub + (suffix if j == 0 else cont_suffix))
+        return expanded
 
     return chunks
 
