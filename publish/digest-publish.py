@@ -44,7 +44,7 @@ MAX_MSG = 4000  # Telegram hard limit ~4096 chars; stay under
 def hard_split_section(block: str, limit: int) -> list[str]:
     """Split a single channel section that exceeds MAX_MSG (e.g. авторский
     дайджест вставлен целиком). Breaks at post-title boundaries
-    (\n<a href="), then at paragraph boundaries. Every piece is valid
+    (\\n<a href="), then at paragraph boundaries. Every piece is valid
     standalone HTML (all tags are closed within their paragraph)."""
     # 1. split at post-title boundaries
     segs = re.split(r"(\n<a href=\")", block)
@@ -89,7 +89,7 @@ def hard_split_section(block: str, limit: int) -> list[str]:
 
 
 def split_digest(text: str) -> list[str]:
-    """Split digest at channel headers (\n📡 <b>) to stay under MAX_MSG.
+    """Split digest at channel headers (\\n📡 <b>) to stay under MAX_MSG.
     Sections that alone exceed MAX_MSG are hard-split at post/paragraph
     boundaries (sub-pieces labelled 'ч. N/M (продолжение)')."""
     if len(text) <= MAX_MSG:
