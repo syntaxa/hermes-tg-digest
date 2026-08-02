@@ -24,10 +24,25 @@ Hermes клонирует репозиторий, поставит зависи�
 ## Как это работает
 
 ```
-06:55 MSK  Collect   → Telethon собирает посты за 24ч → JSON
+06:55 MSK  Collect   → Telethon собирает посты за 24ч из каналов дайджеста → JSON
 07:00 MSK  Gen+Pub   → LLM читает JSON → HTML-дайджест → публикация в канал
 07:25 MSK  Watchdog  → Если генерация упала → диагностика в канал
 ```
+
+### Мульти-дайджест
+
+Поддерживается **несколько изолированных дайджестов** — каждый со своим каналом-получателем, ботом и набором каналов-источников. User-сессия одна общая.
+
+```
+~/.hermes/digest/
+├── config.json              ← api_id, api_hash, phone (общие)
+├── session/user.session     ← одна user-сессия на все дайджесты
+└── digests/
+    ├── syntax/config.json + channels.json + session/bot + data/
+    └── tech/config.json + channels.json + session/bot + data/
+```
+
+Выбор дайджеста через `DIGEST_NAME=syntax` — обёртки резолвят конфиг в `~/.hermes/digest/digests/$DIGEST_NAME/config.json`.
 
 ## Быстрый старт
 
@@ -100,31 +115,31 @@ Hermes настроит три джобы автоматически при за
 
 ## Управление каналами
 
-Каналы добавляются и удаляются через Hermes:
+Каналы добавляются и удаляются через Hermes (или редактируя `channels.json` соответствующего дайджеста):
 
 ```
-добавить @username
+добавить @username в дайджест syntax
 добавить https://t.me/+invite_link
 удалить @username
 каналы
 ```
 
-Или напрямую редактируя `~/.hermes/digest/channels.json`.
+Каждый дайджест хранит свой список в `~/.hermes/digest/digests/<name>/channels.json`.
 
 ## Команды
 
 | Команда | Описание |
 |---------|----------|
-| `python3 collectors/collect.py` | Собрать посты за 24ч |
-| `python3 collectors/collect.py --channels` | Показать список каналов |
-| `python3 collectors/auth_qr.py` | QR-логин |
+| `DIGEST_NAME=<name> python3 collectors/collect.py` | Собрать посты за 24ч для дайджеста `<name>` |
+| `DIGEST_NAME=<name> python3 collectors/collect.py --channels` | Показать список каналов дайджеста |
+| `python3 collectors/auth_qr.py` | QR-логин (одна user-сессия на все дайджесты) |
 | `python3 collectors/auth.py` | Code-based логин |
-| `python3 publish/digest-publish.sh` | Опубликовать дайджест |
-| `python3 publish/digest-watchdog.py` | Проверить, что генерация отработала |
+| `DIGEST_NAME=<name> bash publish/digest-publish.sh` | Опубликовать дайджест `<name>` |
+| `DIGEST_NAME=<name> python3 publish/digest-watchdog.py` | Проверить, что генерация отработала |
 
 ## Конфигурация
 
-`~/.hermes/digest/config.json`:
+`~/.hermes/digest/digests/<name>/config.json`:
 
 ```json
 {
@@ -133,8 +148,9 @@ Hermes настроит три джобы автоматически при за
   "phone": "+790****5678",
   "bot_token": "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz",
   "target_channel_id": -1001234567890,
-  "digest_dir": "~/.hermes/digest",
-  "brand": "Мой Дайджест"
+  "digest_dir": "~/.hermes/digest/digests/<name>",
+  "user_session_dir": "~/.hermes/digest/session",
+  "digest-tag": "Мой Дайджест"
 }
 ```
 
@@ -145,8 +161,11 @@ Hermes настроит три джобы автоматически при за
 | `phone` | ✅ | Номер телефона (для user-сессии сборщика) |
 | `bot_token` | ✅ | Токен от @BotFather (для публикации) |
 | `target_channel_id` | ✅ | Числовой ID канала публикации (отрицательное число) |
-| `digest_dir` | ❌ | Рабочая директория (по умолчанию `~/.hermes/digest`) |
-| `brand` | ❌ | Строка-футер, добавляемая в конец каждого сообщения при разбиении дайджеста на части |
+| `digest_dir` | ❌ | Рабочая директория дайджеста (по умолчанию `~/.hermes/digest/digests/<name>`) |
+| `user_session_dir` | ❌ | Общая папка user.session для всех дайджестов (по умолчанию `~/.hermes/digest/session`) |
+| `digest-tag` | ❌ | Тег в футере при разбиении дайджеста на части (заменяет `brand`) |
+
+Общий конфиг `~/.hermes/digest/config.json` содержит только `api_id, api_hash, phone`.
 
 ## Формат дайджеста
 
@@ -173,7 +192,6 @@ hermes-tg-digest/
 ├── README.md
 ├── requirements.txt
 ├── .env.example              ← шаблон переменных окружения
-├── channels.example.json     ← шаблон списка каналов
 ├── collectors/
 │   ├── auth.py               ← Code-based auth
 │   ├── auth_qr.py            ← QR-логин (рекомендуется)
@@ -187,17 +205,20 @@ hermes-tg-digest/
 ```
 
 Runtime (вне репозитория):
+
+Первичная структура (старый single-digest путь) — больше не создаётся, оставлена для обратной совместимости:
 ```
 ~/.hermes/digest/
-├── config.json              ← ваш конфиг (НЕ коммитить!)
-├── channels.json            ← список каналов
-├── session/
-│   ├── user.session         ← сессия пользователя (для сбора)
-│   └── bot.session          ← сессия бота (для публикации)
-├── data/
-│   └── YYYY-MM-DD.json      ← посты за день
-├── output.md                ← сгенерированный дайджест (удаляется после публикации)
-└── .digest-published        ← маркер успешной публикации
+├── config.json              ← общий (api_id, api_hash, phone)
+├── session/user.session     ← одна сессия на все дайджесты
+└── digests/
+    └── <name>/
+        ├── config.json              ← креды + digest-tag + таргет
+        ├── channels.json            ← каналы-источники
+        ├── session/bot.session      ← сессия бота
+        ├── data/YYYY-MM-DD.json     ← посты за день
+        ├── output.md                ← сгенерированный дайджест
+        └── .digest-published        ← маркер успешной публикации
 ```
 
 ## Безопасность

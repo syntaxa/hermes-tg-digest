@@ -4,6 +4,7 @@
   "phone": "+790****4567",
   "bot_token": "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz",
   "target_channel_id": -1001234567890,
-  "digest_dir": "~/.hermes/digest",
-  "brand": "@yourusername"
+  "digest_dir": "~/.hermes/digest/digests/tech",
+  "user_session_dir": "~/.hermes/digest/session",
+  "digest-tag": "Tech Digest"
 }

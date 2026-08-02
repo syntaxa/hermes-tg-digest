@@ -3,6 +3,27 @@
 Когда пользователь говорит «настрой дайджест» или «разверни проект», используй
 этот гайд для интерактивного onboarding'а.
 
+## Мульти-дайджест
+
+Система поддерживает несколько изолированных дайджестов в отдельных каналах.
+Общая структура:
+
+```
+~/.hermes/digest/
+├── config.json              ← api_id, api_hash, phone (общие)
+├── session/user.session     ← одна user-сессия
+└── digests/
+    ├── syntax/config.json + channels.json + session/bot + data/
+    └── tech/config.json + channels.json + session/bot + data/
+```
+
+Выбор дайджеста — через `DIGEST_NAME` (отражается на `~/.hermes/digest/digests/$DIGEST_NAME/config.json`).
+Каждый дайджест = свой конфиг, бот, каналы, таргет-канал.
+
+**Первичная настройка** (ниже) создаёт первый дайджест. Для добавления второго —
+создай новую папку `digests/<name>/` с собственным `config.json`, `channels.json`,
+и настрой отдельные cron-джобы с переопределённым `DIGEST_NAME`.
+
 ## Workflow: Первичная настройка
 
 Выполняй шаги последовательно, задавая вопросы через `clarify()`.
@@ -88,22 +109,23 @@ python3 collectors/collect.py --get-chat-id <ссылка>
 
 Если команда не сработала (бот не может резолвить инвайт) — попроси пользователя узнать ID через @userinfobot или @getidsbot в канале.
 
-**4e. Brand (опционально)**
+**4e. digest-tag (опционально)**
 
 ```
-Question: Подпись в разбитых сообщениях (например @yourusername). Оставь пустым если не нужно.
+Question: Тег дайджеста для подписи в разбитых сообщениях (например "Tech Digest"). Оставь пустым если не нужно.
 Choices: []
 ```
 
 ### 5. Создание config.json
 
+Спроси у пользователя имя дайджеста (например `syntax`, `tech`, `news`).
 Создай директорию и файл через `write_file`:
 
 ```bash
-mkdir -p ~/.hermes/digest/{session,data}
+mkdir -p ~/.hermes/digest/digests/<name>/{session,data}
 ```
 
-Создай `~/.hermes/digest/config.json` через `write_file`:
+Создай `~/.hermes/digest/digests/<name>/config.json` через `write_file`:
 
 ```json
 {
@@ -112,11 +134,15 @@ mkdir -p ~/.hermes/digest/{session,data}
   "phone": "<phone>",
   "bot_token": "<bot_token>",
   "target_channel_id": <target_channel_id>,
-  "channel_link": "<channel_link>",
-  "digest_dir": "~/.hermes/digest",
-  "brand": "<brand>"
+  "digest_dir": "~/.hermes/digest/digests/<name>",
+  "user_session_dir": "~/.hermes/digest/session",
+  "digest-tag": "<digest_tag>"
 }
 ```
+
+Поле `digest_dir` — куда collect.py и publish.py будут искать `data/`, `session/bot`, `output.md`.
+Поле `user_session_dir` — общая папка с user.session (одна на все дайджесты).
+Поле `digest-tag` — тег в подписи разбитых сообщений (бывш. `brand`).
 
 ### 6. Добавление каналов для мониторинга
 
@@ -189,13 +215,13 @@ python3 collectors/collect.py --channels
 
 ```bash
 cd ~/hermes-tg-digest
-DIGEST_CONFIG=~/.hermes/digest/config.json python3 -c "
+DIGEST_CONFIG=~/.hermes/digest/digests/<name>/config.json python3 -c "
 import asyncio, json, os
 from pathlib import Path
 from telethon import TelegramClient
 from telethon.tl.types import PeerChannel
-cfg = json.load(open(os.path.expanduser('~/.hermes/digest/config.json')))
-BASE = Path(os.path.expanduser('~/.hermes/digest'))
+cfg = json.load(open(os.path.expanduser('~/.hermes/digest/digests/<name>/config.json')))
+BASE = Path(os.path.expanduser(cfg.get('digest_dir', '~/.hermes/digest/digests/<name>')))
 async def test():
     client = TelegramClient(str(BASE / 'session' / 'bot'), cfg['api_id'], cfg['api_hash'])
     await client.start(bot_token=cfg['bot_token'])
@@ -230,7 +256,7 @@ cat ~/hermes-tg-digest/prompts/digest-system.md
 
 В репозитории уже есть три обёртки, которые:
 - Определяют `REPO_DIR` относительно своего расположения
-- Экспортируют `DIGEST_CONFIG` (путь к `~/.hermes/digest/config.json`)
+- Экспортируют `DIGEST_CONFIG`: если задан `DIGEST_NAME` — резолвят в `~/.hermes/digest/digests/$DIGEST_NAME/config.json`, иначе — `~/.hermes/digest/config.json`
 - Вызывают Python-скрипт с аргументами
 
 | Обёртка | Вызывает | Тип cron |
@@ -267,9 +293,9 @@ chmod +x ~/hermes-tg-digest/publish/digest-watchdog.sh
 
 | Название | Расписание (UTC) | Тип | Скрипт | Скиллы |
 |----------|-----------------|-----|--------|--------|
-| digest-collector | `55 3 * * *` | no_agent | `~/hermes-tg-digest/collectors/digest-collect.sh` | — |
-| digest-generator | `0 4 * * *` | agent | LLM промпт | `telegram-digest` |
-| digest-watchdog | `25 4 * * *` | no_agent | `~/hermes-tg-digest/publish/digest-watchdog.sh` | — |
+| digest-collector | `DIGEST_NAME=<name>` `55 3 * * *` | no_agent | `~/hermes-tg-digest/collectors/digest-collect.sh` | — |
+| digest-generator | `DIGEST_NAME=<name>` `0 4 * * *` | agent | LLM промпт (см. «Создание cron-джобы») | `telegram-digest` |
+| digest-watchdog | `DIGEST_NAME=<name>` `25 4 * * *` | no_agent | `~/hermes-tg-digest/publish/digest-watchdog.sh` | — |
 
 **DIGEST_CONFIG** передаётся автоматически через обёртки (export в каждом .sh).
 Не нужно дублировать env var в cron-джобах.
