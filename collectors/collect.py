@@ -43,6 +43,11 @@ CONFIG_FILE_PATH = BASE_DIR / "config.json"
 CHANNELS_FILE = BASE_DIR / "channels.json"
 SESSION_DIR = BASE_DIR / "session"
 DATA_DIR = BASE_DIR / "data"
+# Shared user session across digests (optional).
+# Set user_session_dir to point to the shared session directory.
+USER_SESSION_DIR = Path(os.path.expanduser(
+    cfg.get("user_session_dir", str(SESSION_DIR))
+))
 
 
 def ensure_dirs():
@@ -83,6 +88,7 @@ async def main():
 # ─────────────────────────────────────────────
 # client helpers
 # ─────────────────────────────────────────────
+
 
 
 def _get_api_creds():
@@ -145,7 +151,7 @@ async def collect_posts():
         sys.exit(0)
 
     client = TelegramClient(
-        str(SESSION_DIR / "user"), creds["api_id"], creds["api_hash"]
+        str(USER_SESSION_DIR / "user"), creds["api_id"], creds["api_hash"]
     )
     await client.start()
     if not await client.is_user_authorized():
@@ -185,7 +191,11 @@ async def collect_posts():
                     "date": msg.date.isoformat(),
                     "channel_id": entity.id,
                     "channel_title": entity.title or channel_title,
-                    "text": text[:4096],
+                    # 65536: авторские дайджесты (Refat #ReDigest и т.п.) длиннее
+                    # лимита сообщения 4096 — обрезка ломала их распознавание.
+                    # 4096 было калькой с Telegram-лимита, но относится к стороне
+                    # публикации (split_digest), а не сбора.
+                    "text": text[:65536],
                     "link": link,
                     "has_media": bool(msg.media),
                 })
