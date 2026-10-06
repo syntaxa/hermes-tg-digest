@@ -40,6 +40,120 @@ BOT_SESSION = BASE / "session" / "bot"
 
 MAX_MSG = 4000  # Telegram hard limit ~4096 chars; stay under
 
+# --- Markdown → Telegram HTML safety net -------------------------------
+# collect.py сохраняет текст поста как Markdown (Telethon сериализует
+# entity через msg.text: **bold**, __italic__, [text](url)), а канал
+# публикуется с parse_mode="html". Генератор просится конвертировать
+# Markdown→HTML, но авторские дайджесты нередко вставляются дословно —
+# тогда "[text](url)" уходит в канал как литеральный текст, и ссылка
+# не кликабельна. Конвертируем остатки Markdown прямо перед отправкой.
+_MD_LINK = re.compile(r"\[([^\[\]\n]+)\]\(((?:https?://|tg://|mailto:)[^()\s]+)\)")
+_MD_CODE_BLOCK = re.compile(r"```([\s\S]*?)```")
+_MD_CODE = re.compile(r"`([^`\n]+)`")
+_MD_BOLD = re.compile(r"\*\*(?=\S)([^*\n]*?\S)\*\*")
+_MD_ITALIC = re.compile(r"__(?=\S)([^_\n]*?\S)__")
+_MD_STRIKE = re.compile(r"~~(?=\S)([^~\n]*?\S)~~")
+_MD_DUNDER = re.compile(r"[A-Za-z0-9.]+")  # __init__ — идентификатор, не курсив
+_PLACEHOLDER = "\x00{}\x00"
+
+
+def _emphasis_to_html(text: str) -> str:
+    """`**b**` → <b>b</b>, `__i__` → <i>i</i> (кроме __dunder__-имён),
+    `~~s~~` → <s>s</s>. Уже готовые HTML-теги не затрагиваются."""
+    text = _MD_BOLD.sub(r"<b>\1</b>", text)
+    text = _MD_ITALIC.sub(
+        lambda m: m.group(0) if _MD_DUNDER.fullmatch(m.group(1))
+        else f"<i>{m.group(1)}</i>",
+        text)
+    return _MD_STRIKE.sub(r"<s>\1</s>", text)
+
+
+def markdown_to_html(text: str) -> tuple[str, int]:
+    """Конвертирует остатки Markdown (Telethon-flavour) в Telegram HTML.
+
+    Уже готовые HTML-части не трогаются, содержимое code-блоков никогда не
+    переформатируется. Возвращает (html, число_конверсий).
+    """
+    stash: list[str] = []
+    converted = 0
+
+    def keep(html: str) -> str:
+        stash.append(html)
+        return _PLACEHOLDER.format(len(stash) - 1)
+
+    def subn(pattern, repl, s):
+        nonlocal converted
+        new, n = pattern.subn(repl, s)
+        if new != s:  # считаем только реально изменившиеся вхождения
+            converted += n
+        return new
+
+    # 1. code — его содержимое не подлежит никакой конвертации
+    text = subn(_MD_CODE_BLOCK, lambda m: keep(f"<pre>{m.group(1)}</pre>"), text)
+    text = subn(_MD_CODE, lambda m: keep(f"<code>{m.group(1)}</code>"), text)
+
+    # 2. ссылки: текст ссылки конвертируется на месте, готовый <a> уходит в
+    #    stash — чтобы правила акцентов ниже не испортили href
+    def link(m):
+        nonlocal converted
+        converted += 1
+        return keep(f'<a href="{m.group(2)}">{_emphasis_to_html(m.group(1))}</a>')
+
+    text = _MD_LINK.sub(link, text)
+
+    # 3. акценты в остальном тексте
+    text = subn(_MD_BOLD, r"<b>\1</b>", text)
+    text = subn(_MD_ITALIC,
+                lambda m: m.group(0) if _MD_DUNDER.fullmatch(m.group(1))
+                else f"<i>{m.group(1)}</i>", text)
+    text = subn(_MD_STRIKE, r"<s>\1</s>", text)
+
+    # 4. вернуть на место code/ссылки (обратный порядок: элемент stash может
+    #    содержать только placeholder'ы с меньшим индексом)
+    for i in range(len(stash) - 1, -1, -1):
+        text = text.replace(_PLACEHOLDER.format(i), stash[i])
+    return text, converted
+
+
+def _cut_is_safe(text: str, cut: int) -> bool:
+    """True, если рез по позиции cut не попадает внутрь тега и не разрывает
+    пару <a ...>...</a> (иначе часть ссылки уедет в соседнее сообщение)."""
+    head = text[:cut]
+    if head.count("<") != head.count(">"):
+        return False  # внутри тега
+    return head.count("<a ") == head.count("</a>")  # внутри ссылки
+
+
+def _split_long(unit: str, limit: int) -> list[str]:
+    """Последний рубеж для куска, у которого нет границ абзацев/строк
+    (один абзац длиннее лимита). Режет по последнему переводу строки,
+    затем по пробелу, затем перед тегом — но всегда на безопасной позиции,
+    иначе <a> разорвётся между сообщениями и ссылка потеряется.
+    Без этого секция > 4096 ушла бы в Telegram и упала бы
+    MessageTooLongError."""
+    out: list[str] = []
+    rest = unit
+    while len(rest) > limit:
+        window = rest[:limit]
+        cut = -1
+        # кандидаты от поздних к ранним: перевод строки → пробел → тег
+        for pat in (r"\n", r" ", r"<"):
+            for m in reversed(list(re.finditer(pat, window))):
+                if m.start() > 0 and _cut_is_safe(rest, m.start()):
+                    cut = m.start()
+                    break
+            if cut > 0:
+                break
+        if cut <= 0:
+            # безопасных границ нет (например, ссылка длиннее лимита) —
+            # режем по лимиту, чтобы не упасть с MessageTooLongError
+            cut = limit
+        out.append(rest[:cut])
+        rest = rest[cut:]
+    if rest:
+        out.append(rest)
+    return out
+
 
 def hard_split_section(block: str, limit: int) -> list[str]:
     """Split a single channel section that exceeds MAX_MSG (e.g. авторский
@@ -73,6 +187,17 @@ def hard_split_section(block: str, limit: int) -> list[str]:
             i += 2
         if buf:
             final_units.append(buf)
+    # 2.5. кусок без внутренних границ (один абзац длиннее лимита) — дробим
+    #      по строкам/пробелам, иначе Telegram ответит MessageTooLongError.
+    #      Внимание: НЕ list comprehension с тернарником — иначе в истинной
+    #      ветке строка u итерируется посимвольно и разбивается на буквы.
+    bounded = []
+    for u in final_units:
+        if len(u) <= limit:
+            bounded.append(u)
+        else:
+            bounded.extend(_split_long(u, limit))
+    final_units = bounded
     # 3. greedy pack units into pieces <= limit
     pieces = []
     buf = ""
@@ -133,6 +258,11 @@ def split_digest(text: str) -> list[str]:
                 expanded.append(sub + (suffix if j == 0 else cont_suffix))
         return expanded
 
+    if len(chunks) == 1 and len(chunks[0]) > MAX_MSG:
+        # Единственная секция (нет границ по каналам) сама не влезает —
+        # режем без подписи «ч. N/M», иначе MessageTooLongError.
+        return hard_split_section(chunks[0], MAX_MSG)
+
     return chunks
 
 
@@ -145,6 +275,11 @@ async def send_digest(client, entity) -> bool:
     text = OUTPUT_FILE.read_text(encoding="utf-8").strip()
     if not text:
         return False
+
+    # Страховка: довести остатки Markdown до Telegram HTML (см. markdown_to_html)
+    text, md_converted = markdown_to_html(text)
+    if md_converted:
+        print(f"  ↳ Markdown→HTML: {md_converted} conversion(s)")
 
     chunks = split_digest(text)
     for i, chunk in enumerate(chunks, 1):
@@ -251,4 +386,5 @@ async def main():
     print("✅ Publish complete")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
