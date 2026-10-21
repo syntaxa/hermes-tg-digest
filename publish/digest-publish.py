@@ -246,7 +246,7 @@ def _split_long(unit: str, limit: int) -> list[str]:
 def hard_split_section(block: str, limit: int) -> list[str]:
     """Split a single channel section that exceeds MAX_MSG (e.g. авторский
     дайджест вставлен целиком). Breaks at post-title boundaries
-    (\\n<a href=\"), then at paragraph boundaries. Every piece is valid
+    (\\n<a href="), then at paragraph boundaries. Every piece is valid
     standalone HTML (all tags are closed within their paragraph)."""
     # 1. split at post-title boundaries
     segs = re.split(r"(\n<a href=\")", block)
