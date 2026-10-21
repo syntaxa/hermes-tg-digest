@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Publish digest to Telegram channel via Telethon (bot mode)."""
-import asyncio, sys, re, os, json
+import asyncio, sys, re, os, json, shutil, time
 from pathlib import Path
 from datetime import datetime, timezone
 from telethon import TelegramClient
@@ -39,6 +39,94 @@ REPORT_FILE = BASE / "data" / "collect-report.json"
 BOT_SESSION = BASE / "session" / "bot"
 
 MAX_MSG = 4000  # Telegram hard limit ~4096 chars; stay under
+
+# --- Stray output.md adoption + publish decision ----------------------------
+# Генератор пишет output.md через write_file, а путь в скилле не абсолютный,
+# поэтому файл нередко оказывается в cwd (~/output.md) вместо BASE. Раньше это
+# означало: send_digest() не находит файл → в канал уходило «📭 Нет новых
+# постов за сегодня», а cleanup() попутно удалял собранные коллектором посты и
+# ставил маркер (watchdog считал день обработанным). Теперь publish сам
+# подбирает свежий дайджестоподобный файл, а при реальной ошибке НЕ шлёт
+# ничего и НЕ чистит данные — выход 3 отдаёт причину и вызывающей LLM, и
+# watchdog'у.
+STRAY_MAX_AGE = 2 * 3600  # сек: генерация и публикация идут в одном ране
+
+
+def _looks_like_digest(text: str) -> bool:
+    """Санити-проверка чужого output.md: в файле должен быть наш дайджест,
+    а не случайный output.md из другого задания в том же cwd."""
+    return "<a href=" in text and ("📅" in text or "📡" in text)
+
+
+def default_candidates() -> list:
+    """Где LLM чаще всего роняет output.md при относительном пути в скилле."""
+    return [Path.home() / "output.md", Path.cwd() / "output.md"]
+
+
+def resolve_output(candidates=None, now=None):
+    """Путь к output.md в каноническом расположении (BASE/output.md) или None.
+
+    Если канонического файла нет, но рядом лежит свежий дайджестоподобный
+    output.md — перекладываем его в BASE и возвращаем путь.
+    """
+    if OUTPUT_FILE.exists() and OUTPUT_FILE.stat().st_size > 0:
+        return OUTPUT_FILE
+    if candidates is None:
+        candidates = default_candidates()
+    now = time.time() if now is None else now
+    seen = set()
+    for cand in candidates:
+        cand = Path(cand)
+        if cand in seen or cand == OUTPUT_FILE:
+            continue
+        seen.add(cand)
+        try:
+            if not cand.is_file():
+                continue
+            st = cand.stat()
+            if now - st.st_mtime > STRAY_MAX_AGE:
+                continue  # протухший файл — не наш дайджест
+            text = cand.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not text.strip() or not _looks_like_digest(text):
+            continue
+        OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(cand), str(OUTPUT_FILE))
+        print(f"  ⚠️ Adopted stray output.md: {cand} → {OUTPUT_FILE}")
+        return OUTPUT_FILE
+    return None
+
+
+def collected_posts_count() -> int:
+    """Сколько постов реально собрано коллектором (data/*.json)."""
+    total = 0
+    for f in sorted((BASE / "data").glob("*.json")):
+        if f.name == "collect-report.json":
+            continue
+        try:
+            posts = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(posts, list):
+            total += len(posts)
+    return total
+
+
+def decide(digest_sent: bool, transparency_sent: bool, posts: int) -> str:
+    """Что делать, когда в канал ещё не ушло ничего (см. main).
+
+    digest      — дайджест опубликован → cleanup;
+    empty       — постов не было (действительно пустой день) → «Нет постов»;
+    transparency— ушёл только отчёт о сбоях сбора → cleanup;
+    error       — посты собраны, а output.md нет/пуст: НИЧЕГО не шлём и не
+                  чистим, выход 3 (LLM видит причину, watchdog — маркер).
+    """
+    if digest_sent:
+        return "digest"
+    if posts > 0:
+        return "error"
+    return "transparency" if transparency_sent else "empty"
 
 # --- Markdown → Telegram HTML safety net -------------------------------
 # collect.py сохраняет текст поста как Markdown (Telethon сериализует
@@ -158,7 +246,7 @@ def _split_long(unit: str, limit: int) -> list[str]:
 def hard_split_section(block: str, limit: int) -> list[str]:
     """Split a single channel section that exceeds MAX_MSG (e.g. авторский
     дайджест вставлен целиком). Breaks at post-title boundaries
-    (\\n<a href="), then at paragraph boundaries. Every piece is valid
+    (\\n<a href=\"), then at paragraph boundaries. Every piece is valid
     standalone HTML (all tags are closed within their paragraph)."""
     # 1. split at post-title boundaries
     segs = re.split(r"(\n<a href=\")", block)
@@ -359,6 +447,11 @@ async def main():
         print("ERROR: target_channel_id required in config.json.", file=sys.stderr)
         sys.exit(1)
 
+    # 0. Подобрать output.md, если генератор записал его не в BASE
+    #    (см. resolve_output) и посчитать реально собранные посты ДО cleanup.
+    resolve_output()
+    posts = collected_posts_count()
+
     client = TelegramClient(str(BOT_SESSION), api_id, api_hash)
     await client.start(bot_token=bot_token)
 
@@ -370,8 +463,23 @@ async def main():
     # 2. Send transparency about collection errors (if any)
     transparency_sent = await send_transparency(client, entity)
 
-    # 3. Fallback: if nothing was sent at all, inform channel
-    if not digest_sent and not transparency_sent:
+    action = decide(digest_sent, transparency_sent, posts)
+
+    # 3. Гард: посты собраны, а дайджеста нет → не шлём «Нет постов»,
+    #    не удаляем данные и не ставим маркер, иначе день теряется молча
+    #    (watchdog увидит старый маркер, LLM — причину и ненулевой выход).
+    if action == "error":
+        print(
+            f"ERROR: output.md missing or empty while {posts} collected "
+            "post(s) exist — refusing to send the 'no posts' notice; "
+            "data kept, marker not set (exit 3)",
+            file=sys.stderr,
+        )
+        await client.disconnect()
+        sys.exit(3)
+
+    # 4. «Нет постов» — только на действительно пустой день (posts == 0)
+    if action == "empty":
         msg = (
             "📭 <b>Нет новых постов за сегодня</b>\n\n"
             "Все каналы обработаны, но за последние 24 часа не найдено "
@@ -380,7 +488,7 @@ async def main():
         await client.send_message(entity, msg, parse_mode="html", link_preview=False)
         print("  📭 Sent no-content message")
 
-    # 4. Cleanup
+    # 5. Cleanup — только когда день действительно обработан
     await cleanup()
 
     print("✅ Publish complete")
